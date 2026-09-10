@@ -25,7 +25,7 @@ pip install -q -r requirements.txt
 
 echo.
 echo === Running screener ===
-python screener.py
+python screener.py %*
 set SCREENER_EXIT=%errorlevel%
 
 if exist output\report.html (

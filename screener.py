@@ -14,9 +14,11 @@
 
 使い方:
   python screener.py
+  python screener.py --refresh-credit   # 信用取引データのキャッシュを無視して全銘柄再取得
   もしくは Windows なら run.bat をダブルクリック。
 """
 
+import argparse
 import os
 import sys
 import time
@@ -34,7 +36,17 @@ def _now_iso():
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def _parse_args():
+    p = argparse.ArgumentParser(description="長期上昇候補スクリーナー（ローカル実行版）")
+    p.add_argument(
+        "--refresh-credit", action="store_true",
+        help="信用取引（需給）データのキャッシュを無視し、候補銘柄すべてを再取得する",
+    )
+    return p.parse_args()
+
+
 def run():
+    args = _parse_args()
     date = _today_str()
     ran_at = _now_iso()
 
@@ -61,12 +73,27 @@ def run():
                 "data/raw_pages/ の生HTMLを確認してください。"
             )
 
-        print("[3/4] 個別銘柄の信用取引（需給）データを取得中...（{}銘柄）".format(len(merged)))
+        max_age = 0 if args.refresh_credit else config.CREDIT_CACHE_MAX_AGE_DAYS
+        print(
+            "[3/4] 個別銘柄の信用取引（需給）データを取得中...（{}銘柄 / キャッシュ有効期限 {}日{}）".format(
+                len(merged), config.CREDIT_CACHE_MAX_AGE_DAYS,
+                "・強制再取得" if args.refresh_credit else "",
+            )
+        )
+        cache_hits = 0
+        fetched = 0
         for i, rec in enumerate(merged, start=1):
-            rec["credit"] = scraper.fetch_credit_data(rec["code"], session)
+            cached = storage.get_cached_credit(rec["code"], max_age)
+            if cached:
+                rec["credit"] = cached
+                cache_hits += 1
+            else:
+                rec["credit"] = scraper.fetch_credit_data(rec["code"], session)
+                storage.save_cached_credit(rec["code"], rec["credit"], _now_iso())
+                fetched += 1
+                time.sleep(config.CREDIT_REQUEST_DELAY_SEC)
             if i % 20 == 0 or i == len(merged):
-                print("      {}/{}".format(i, len(merged)))
-            time.sleep(config.CREDIT_REQUEST_DELAY_SEC)
+                print("      {}/{}（キャッシュ利用 {}件 / 新規取得 {}件）".format(i, len(merged), cache_hits, fetched))
 
         print("[4/4] スコアを算出し、保存しています...")
         scored = scoring.compute_scores(merged)
@@ -93,6 +120,7 @@ def run():
 
         print()
         print("完了: 候補{}銘柄 / 首位 {}（{}点）".format(len(scored), top["name"], top["score"]))
+        print("需給データ: キャッシュ利用 {}件 / 新規取得 {}件".format(cache_hits, fetched))
         print("レポート: output/report.html")
         print("要約JSON: output/summary_latest.json （Claudeに貼って確認してもらってください）")
         return 0

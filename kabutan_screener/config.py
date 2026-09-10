@@ -28,6 +28,12 @@ REQUEST_DELAY_SEC = 0.8          # ランキングページ間のウェイト
 CREDIT_REQUEST_DELAY_SEC = 0.6   # 個別銘柄ページ取得間のウェイト
 MAX_RANKING_PAGES = 40           # 安全装置（無限ループ防止。1ページ50件なので2000件相当）
 
+# --- 信用取引（需給）データのキャッシュ ---
+# kabutanの信用残は週次更新のため、候補銘柄180件超を毎回スクレイピングし直すのは
+# 無駄が大きい。fetched_atからこの日数以内ならキャッシュ(data/screener.db内)を使い
+# 再取得をスキップする。0にすると毎回必ず再取得する。
+CREDIT_CACHE_MAX_AGE_DAYS = 6
+
 # --- 連続増益の最低期数（候補条件） ---
 MIN_PROFIT_GROWTH_STREAK = 3
 

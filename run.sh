@@ -13,7 +13,7 @@ pip install -q -r requirements.txt
 
 echo
 echo "=== スクリーナーを実行します ==="
-python3 screener.py
+python3 screener.py "$@"
 STATUS=$?
 
 if [ -f output/report.html ]; then
