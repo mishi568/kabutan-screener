@@ -6,8 +6,14 @@ import os
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+LOG_DIR = os.path.join(BASE_DIR, "logs")
 DB_PATH = os.path.join(DATA_DIR, "screener.db")
 RAW_HTML_DEBUG_DIR = os.path.join(DATA_DIR, "raw_pages")  # デバッグ用に生HTMLを保存する場所
+
+# run.bat/run.shのウィンドウが一瞬で閉じてしまっても後から確認できるよう、
+# コンソール出力をそのままファイルにも残す（screener.py / volume_watch.py 共通の仕組み）。
+SCREENER_LOG_PATH = os.path.join(LOG_DIR, "screener_log.txt")
+VOLUME_LOG_PATH = os.path.join(LOG_DIR, "volume_watch_log.txt")
 
 # --- 対象URL ---
 FUNDAMENTAL_RANKING_URL = "https://kabutan.jp/tansaku/consecutive_annual_operating_profit_growth_ranking"

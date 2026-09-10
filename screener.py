@@ -25,7 +25,7 @@ import time
 import traceback
 from datetime import datetime
 
-from kabutan_screener import config, scraper, scoring, storage, report
+from kabutan_screener import config, scraper, scoring, storage, report, logsetup
 from kabutan_screener.browser_fetch import BrowserFetcher
 
 
@@ -51,6 +51,15 @@ def run():
     date = _today_str()
     ran_at = _now_iso()
 
+    orig_stdout, orig_stderr, log_file = logsetup.start_logging(config.SCREENER_LOG_PATH)
+    try:
+        return _run_inner(args, date, ran_at)
+    finally:
+        print("ログ: logs/screener_log.txt （画面が読めなかった場合はこちらを確認してください）")
+        logsetup.stop_logging(orig_stdout, orig_stderr, log_file)
+
+
+def _run_inner(args, date, ran_at):
     print("=== 長期上昇候補スクリーナー ===")
     print("実行日時:", ran_at)
 

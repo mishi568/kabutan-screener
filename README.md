@@ -55,6 +55,15 @@ kabutan.jp側のbot対策とみられる挙動により、ページの見出し�
 | `output/summary_latest.json` | Claudeに貼って確認してもらう用の要約（上位20銘柄＋前回との比較） |
 | `data/screener.db` | SQLite。実行のたびに履歴を蓄積（削除しない限り消えません） |
 | `data/raw_pages/` | デバッグ用に、取得した生HTMLを保存（トラブル時の確認用） |
+| `logs/screener_log.txt` | 実行時にコンソールへ表示される内容をそのまま追記保存したテキストログ |
+
+## エラーが起きた・ウィンドウがすぐ閉じてしまった場合
+
+`run.bat`のウィンドウが一瞬で閉じてしまった、何が起きたか確認できなかった、
+という場合でも、**画面に表示される内容は必ず`logs/screener_log.txt`にも
+そのまま保存されます**（エラー発生時のトラブルの詳細=Pythonのエラー内容も含む）。
+このファイルをテキストエディタで開くか、そのままClaudeとの会話に貼り付けて
+相談してください（2MBを超えると古い部分は自動的に切り詰められます）。
 
 ## 信用取引（需給）データのキャッシュ
 
@@ -143,6 +152,7 @@ Windowsのタスクスケジューラに `run.bat`（および後述の `run_vol
 | `output/volume_report.html` | ブラウザで見る候補一覧＋実行ログ（毎回上書き） |
 | `output/volume_summary_latest.json` | Claudeに貼って確認してもらう用の要約 |
 | `data/volume_watch.db` | SQLite。長期候補スクリーナーの `data/screener.db` とは別ファイル |
+| `logs/volume_watch_log.txt` | 実行ログ（`logs/screener_log.txt`とは別ファイル）。エラー時はこちらも確認してください |
 
 ## 検出条件
 

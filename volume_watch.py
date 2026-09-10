@@ -30,7 +30,7 @@ import sys
 import traceback
 from datetime import datetime
 
-from kabutan_screener import config, volume_scraper, volume_storage, volume_analysis, volume_report
+from kabutan_screener import config, volume_scraper, volume_storage, volume_analysis, volume_report, logsetup
 from kabutan_screener.browser_fetch import BrowserFetcher
 
 
@@ -59,6 +59,15 @@ def run():
     date = _today_str()
     ran_at = _now_iso()
 
+    orig_stdout, orig_stderr, log_file = logsetup.start_logging(config.VOLUME_LOG_PATH)
+    try:
+        return _run_inner(date, ran_at)
+    finally:
+        print("ログ: logs/volume_watch_log.txt （画面が読めなかった場合はこちらを確認してください）")
+        logsetup.stop_logging(orig_stdout, orig_stderr, log_file)
+
+
+def _run_inner(date, ran_at):
     print("=== 出来高急増ウォッチ ===")
     print("実行日時:", ran_at)
 
