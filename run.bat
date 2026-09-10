@@ -1,26 +1,30 @@
 @echo off
+chcp 65001 >nul
 setlocal
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
 cd /d %~dp0
 
 where python >nul 2>nul
 if errorlevel 1 (
-    echo Pythonが見つかりません。https://www.python.org/ からインストールしてください。
+    echo Python not found. Please install it from https://www.python.org/
+    echo ^(Check "Add Python to PATH" during installation.^)
     pause
     exit /b 1
 )
 
 if not exist venv (
-    echo [初回セットアップ] 仮想環境を作成しています...
+    echo [First run] Creating virtual environment...
     python -m venv venv
 )
 
 call venv\Scripts\activate.bat
 
-echo 依存パッケージを確認しています...
+echo Checking dependencies...
 pip install -q -r requirements.txt
 
 echo.
-echo === スクリーナーを実行します ===
+echo === Running screener ===
 python screener.py
 set SCREENER_EXIT=%errorlevel%
 
@@ -30,8 +34,8 @@ if exist output\report.html (
 
 echo.
 if %SCREENER_EXIT% neq 0 (
-    echo 実行中にエラーが発生しました。上記のログを確認してください。
+    echo An error occurred. Please check the log above.
 ) else (
-    echo 完了しました。output\summary_latest.json をClaudeとの会話に貼って確認を依頼できます。
+    echo Done. Paste output\summary_latest.json into your chat with Claude to get comments.
 )
 pause
