@@ -1,0 +1,15 @@
+# データベース・生成物（環境ごとに作られるものなのでコミットしない）
+kabutan.db
+raw_html/
+ai_brief_*.md
+run_log.txt
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
