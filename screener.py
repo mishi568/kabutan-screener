@@ -26,6 +26,7 @@ import traceback
 from datetime import datetime
 
 from kabutan_screener import config, scraper, scoring, storage, report
+from kabutan_screener.browser_fetch import BrowserFetcher
 
 
 def _today_str():
@@ -54,46 +55,46 @@ def run():
     print("実行日時:", ran_at)
 
     try:
-        session = scraper._session()
+        print("（初回のみ）ブラウザ(Chromium)を起動しています...")
+        with BrowserFetcher() as fetcher:
+            print("[1/4] ファンダメンタルズ候補（連続増益ランキング）を取得中...")
+            fundamental = scraper.fetch_fundamental_candidates(fetcher)
+            print("      {}件".format(len(fundamental)))
 
-        print("[1/4] ファンダメンタルズ候補（連続増益ランキング）を取得中...")
-        fundamental = scraper.fetch_fundamental_candidates(session)
-        print("      {}件".format(len(fundamental)))
+            print("[2/4] テクニカル候補（移動平均線上昇トレンド）を取得中...")
+            technical = scraper.fetch_technical_candidates(fetcher)
+            print("      {}件".format(len(technical)))
 
-        print("[2/4] テクニカル候補（移動平均線上昇トレンド）を取得中...")
-        technical = scraper.fetch_technical_candidates(session)
-        print("      {}件".format(len(technical)))
+            merged = scoring.intersect_candidates(fundamental, technical)
+            print("      両方に共通する候補: {}件".format(len(merged)))
 
-        merged = scoring.intersect_candidates(fundamental, technical)
-        print("      両方に共通する候補: {}件".format(len(merged)))
+            if not merged:
+                raise RuntimeError(
+                    "候補が0件でした。kabutan.jpのページ構成が変わった可能性があります。"
+                    "data/raw_pages/ の生HTMLを確認してください。"
+                )
 
-        if not merged:
-            raise RuntimeError(
-                "候補が0件でした。kabutan.jpのページ構成が変わった可能性があります。"
-                "data/raw_pages/ の生HTMLを確認してください。"
+            max_age = 0 if args.refresh_credit else config.CREDIT_CACHE_MAX_AGE_DAYS
+            print(
+                "[3/4] 個別銘柄の信用取引（需給）データを取得中...（{}銘柄 / キャッシュ有効期限 {}日{}）".format(
+                    len(merged), config.CREDIT_CACHE_MAX_AGE_DAYS,
+                    "・強制再取得" if args.refresh_credit else "",
+                )
             )
-
-        max_age = 0 if args.refresh_credit else config.CREDIT_CACHE_MAX_AGE_DAYS
-        print(
-            "[3/4] 個別銘柄の信用取引（需給）データを取得中...（{}銘柄 / キャッシュ有効期限 {}日{}）".format(
-                len(merged), config.CREDIT_CACHE_MAX_AGE_DAYS,
-                "・強制再取得" if args.refresh_credit else "",
-            )
-        )
-        cache_hits = 0
-        fetched = 0
-        for i, rec in enumerate(merged, start=1):
-            cached = storage.get_cached_credit(rec["code"], max_age)
-            if cached:
-                rec["credit"] = cached
-                cache_hits += 1
-            else:
-                rec["credit"] = scraper.fetch_credit_data(rec["code"], session)
-                storage.save_cached_credit(rec["code"], rec["credit"], _now_iso())
-                fetched += 1
-                time.sleep(config.CREDIT_REQUEST_DELAY_SEC)
-            if i % 20 == 0 or i == len(merged):
-                print("      {}/{}（キャッシュ利用 {}件 / 新規取得 {}件）".format(i, len(merged), cache_hits, fetched))
+            cache_hits = 0
+            fetched = 0
+            for i, rec in enumerate(merged, start=1):
+                cached = storage.get_cached_credit(rec["code"], max_age)
+                if cached:
+                    rec["credit"] = cached
+                    cache_hits += 1
+                else:
+                    rec["credit"] = scraper.fetch_credit_data(rec["code"], fetcher)
+                    storage.save_cached_credit(rec["code"], rec["credit"], _now_iso())
+                    fetched += 1
+                    time.sleep(config.CREDIT_REQUEST_DELAY_SEC)
+                if i % 20 == 0 or i == len(merged):
+                    print("      {}/{}（キャッシュ利用 {}件 / 新規取得 {}件）".format(i, len(merged), cache_hits, fetched))
 
         print("[4/4] スコアを算出し、保存しています...")
         scored = scoring.compute_scores(merged)

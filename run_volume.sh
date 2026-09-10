@@ -1,5 +1,5 @@
 #!/bin/bash
-# macOS/Linuxで使う場合の起動スクリプト（Windowsの人はrun.batを使ってください）
+# macOS/Linuxで使う場合の起動スクリプト（Windowsの人はrun_volume.batを使ってください）
 set -e
 cd "$(dirname "$0")"
 
@@ -19,15 +19,15 @@ if [ ! -f venv/.playwright_chromium_installed ]; then
 fi
 
 echo
-echo "=== スクリーナーを実行します ==="
-python3 screener.py "$@"
+echo "=== 出来高急増ウォッチを実行します ==="
+python3 volume_watch.py "$@"
 STATUS=$?
 
-if [ -f output/report.html ]; then
+if [ -f output/volume_report.html ]; then
     if command -v open >/dev/null 2>&1; then
-        open output/report.html
+        open output/volume_report.html
     elif command -v xdg-open >/dev/null 2>&1; then
-        xdg-open output/report.html
+        xdg-open output/volume_report.html
     fi
 fi
 

@@ -36,18 +36,18 @@ if not exist venv\.playwright_chromium_installed (
 )
 
 echo.
-echo === Running screener ===
-python screener.py %*
-set SCREENER_EXIT=%errorlevel%
+echo === Running volume watch ===
+python volume_watch.py %*
+set WATCH_EXIT=%errorlevel%
 
-if exist output\report.html (
-    start "" "output\report.html"
+if exist output\volume_report.html (
+    start "" "output\volume_report.html"
 )
 
 echo.
-if %SCREENER_EXIT% neq 0 (
+if %WATCH_EXIT% neq 0 (
     echo An error occurred. Please check the log above.
 ) else (
-    echo Done. Paste output\summary_latest.json into your chat with Claude to get comments.
+    echo Done. Paste output\volume_summary_latest.json into your chat with Claude to get comments.
 )
 pause

@@ -4,122 +4,39 @@ kabutan.jp のスクレイピング処理。
 
 方針: kabutanのHTML構造（class名など）は将来変わりうるため、できるだけ
 「見出しセルのテキスト」を手がかりにテーブルと列位置を探す、位置に強い
-実装にしている。もし kabutan 側のページ構成が大きく変わった場合は、
-ScraperError が分かりやすいメッセージ付きで送出されるので、
-data/raw_pages/ に保存された生HTMLを見ながら本ファイルの
+実装にしている（共通ロジックは html_utils.py）。もし kabutan 側のページ
+構成が大きく変わった場合は、ScraperError が分かりやすいメッセージ付きで
+送出されるので、data/raw_pages/ に保存された生HTMLを見ながら本ファイルの
 *_HEADER_ALIASES を調整してほしい。
+
+取得はPlaywright（ヘッドレスChromium）経由で行う。requestsによる単純な
+HTTPアクセスでは、kabutan.jp側のbot対策とみられる挙動によりテーブルの
+中身が空になる症状が確認されたため、実ブラウザでページを描画させてから
+HTMLを取得する方式にしている（browser_fetch.py）。
 """
 
-import os
-import re
 import time
-import unicodedata
 from datetime import datetime
 
-import requests
 from bs4 import BeautifulSoup
 
 from . import config
+from .html_utils import (
+    ScraperError,
+    norm_text,
+    parse_number,
+    find_table_by_headers,
+    column_index_map,
+)
 
-
-class ScraperError(Exception):
-    """スクレイピング中に予期しない構造に遭遇した場合に送出する。"""
-
-
-def _session():
-    s = requests.Session()
-    s.headers.update({"User-Agent": config.USER_AGENT})
-    return s
-
-
-def _get(session, url, debug_name=None):
-    resp = session.get(url, timeout=config.REQUEST_TIMEOUT_SEC)
-    resp.raise_for_status()
-    resp.encoding = resp.apparent_encoding or resp.encoding
-    if debug_name:
-        _save_debug_html(debug_name, resp.text)
-    return resp.text
-
-
-def _save_debug_html(name, html):
-    try:
-        os.makedirs(config.RAW_HTML_DEBUG_DIR, exist_ok=True)
-        path = os.path.join(config.RAW_HTML_DEBUG_DIR, name)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(html)
-    except OSError:
-        pass  # デバッグ保存の失敗は致命的ではない
-
-
-def _norm_text(s):
-    if s is None:
-        return ""
-    s = unicodedata.normalize("NFKC", s)  # 全角数字・記号を半角に寄せる
-    return s.strip()
-
-
-def parse_number(raw):
-    """'1,234円' '+12.3%' '－' '3.29倍' などを float/None に変換する。"""
-    if raw is None:
-        return None
-    s = _norm_text(raw)
-    if s in ("", "-", "－", "―", "*", "N/A", "--"):
-        return None
-    s = s.replace(",", "").replace("円", "").replace("倍", "").replace("%", "").replace("株", "")
-    s = s.replace("+", "")
-    m = re.search(r"-?\d+(\.\d+)?", s)
-    if not m:
-        return None
-    try:
-        return float(m.group(0))
-    except ValueError:
-        return None
-
-
-def _find_table_by_headers(soup, required_keyword_groups):
-    """
-    required_keyword_groups: 各要素が「その列に期待される見出し候補文字列のリスト」の
-    リスト。全グループについて、いずれかの候補文字列を含む見出しセルを持つ
-    <table> を探して返す。見つからなければ None。
-    """
-    for table in soup.find_all("table"):
-        header_cells = table.find_all(["th"])
-        if not header_cells:
-            first_row = table.find("tr")
-            if first_row:
-                header_cells = first_row.find_all(["th", "td"])
-        header_texts = [_norm_text(c.get_text()) for c in header_cells]
-        if not header_texts:
-            continue
-        ok = True
-        for group in required_keyword_groups:
-            if not any(any(kw in h for kw in group) for h in header_texts):
-                ok = False
-                break
-        if ok:
-            return table, header_texts
-    return None, None
-
-
-def _column_index_map(header_texts, alias_map):
-    """alias_map: {論理名: [見出し候補...]} -> {論理名: 列インデックス}"""
-    idx = {}
-    for logical_name, aliases in alias_map.items():
-        found = None
-        for i, h in enumerate(header_texts):
-            if any(a in h for a in aliases):
-                found = i
-                break
-        if found is None:
-            raise ScraperError(
-                "列「{}」に対応する見出しが見つかりませんでした（候補: {}）。"
-                "kabutan.jpのページ構成が変わった可能性があります。"
-                "data/raw_pages/ の生HTMLを確認し、config.pyやscraper.pyの見出し候補を調整してください。".format(
-                    logical_name, aliases
-                )
-            )
-        idx[logical_name] = found
-    return idx
+__all__ = [
+    "ScraperError",
+    "parse_number",
+    "fetch_fundamental_candidates",
+    "fetch_technical_candidates",
+    "fetch_credit_data",
+    "now_jst_string",
+]
 
 
 RANKING_HEADER_ALIASES = {
@@ -158,14 +75,14 @@ def _is_target_market(market_text):
     return any(m in market_text for m in config.TARGET_MARKETS)
 
 
-def _fetch_ranking_pages(session, base_url, extra_alias_map, kind_label):
+def _fetch_ranking_pages(fetcher, base_url, extra_alias_map, kind_label):
     """ページング付きランキング一覧を全ページ取得し、辞書のリストで返す。"""
     all_rows = []
     seen_codes_first_page = None
     for page in range(1, config.MAX_RANKING_PAGES + 1):
         sep = "&" if "?" in base_url else "?"
         url = base_url if page == 1 else "{}{}page={}".format(base_url, sep, page)
-        html = _get(session, url, debug_name="{}_page{}.html".format(kind_label, page))
+        html = fetcher.get(url, debug_name="{}_page{}.html".format(kind_label, page))
         soup = BeautifulSoup(html, "lxml")
 
         required_groups = [
@@ -173,7 +90,7 @@ def _fetch_ranking_pages(session, base_url, extra_alias_map, kind_label):
             RANKING_HEADER_ALIASES["name"],
             RANKING_HEADER_ALIASES["market"],
         ]
-        table, header_texts = _find_table_by_headers(soup, required_groups)
+        table, header_texts = find_table_by_headers(soup, required_groups)
         if table is None:
             if page == 1:
                 raise ScraperError(
@@ -184,7 +101,7 @@ def _fetch_ranking_pages(session, base_url, extra_alias_map, kind_label):
 
         alias_map = dict(RANKING_HEADER_ALIASES)
         alias_map.update(extra_alias_map)
-        col = _column_index_map(header_texts, alias_map)
+        col = column_index_map(header_texts, alias_map)
 
         body = table.find("tbody") or table
         data_rows = [
@@ -201,7 +118,7 @@ def _fetch_ranking_pages(session, base_url, extra_alias_map, kind_label):
                 continue
             row = {}
             for logical_name, i in col.items():
-                text = _norm_text(cells[i].get_text())
+                text = norm_text(cells[i].get_text())
                 row[logical_name] = text
             page_codes.append(row.get("code"))
             all_rows.append(row)
@@ -218,11 +135,10 @@ def _fetch_ranking_pages(session, base_url, extra_alias_map, kind_label):
     return all_rows
 
 
-def fetch_fundamental_candidates(session=None):
+def fetch_fundamental_candidates(fetcher):
     """通期『営業利益』連続増益ランキングを取得する。"""
-    session = session or _session()
     rows = _fetch_ranking_pages(
-        session, config.FUNDAMENTAL_RANKING_URL, FUNDAMENTAL_EXTRA_ALIASES, "fundamental"
+        fetcher, config.FUNDAMENTAL_RANKING_URL, FUNDAMENTAL_EXTRA_ALIASES, "fundamental"
     )
     out = []
     for r in rows:
@@ -245,11 +161,10 @@ def fetch_fundamental_candidates(session=None):
     return out
 
 
-def fetch_technical_candidates(session=None):
+def fetch_technical_candidates(fetcher):
     """移動平均線上昇トレンド銘柄ランキングを取得する。"""
-    session = session or _session()
     rows = _fetch_ranking_pages(
-        session, config.TECHNICAL_RANKING_URL, TECHNICAL_EXTRA_ALIASES, "technical"
+        fetcher, config.TECHNICAL_RANKING_URL, TECHNICAL_EXTRA_ALIASES, "technical"
     )
     out = []
     for r in rows:
@@ -270,18 +185,17 @@ def fetch_technical_candidates(session=None):
     return out
 
 
-def fetch_credit_data(code, session=None):
+def fetch_credit_data(code, fetcher):
     """
     個別銘柄ページの「信用取引」テーブルから、直近5週分の
     売り残・買い残・倍率を取得する。
     戻り値: {"sell": float|None, "buy": float|None, "ratio": float|None,
              "buy_oldest": float|None} 取得できなければ全てNone。
     """
-    session = session or _session()
     url = config.STOCK_PAGE_URL.format(code=code)
     try:
-        html = _get(session, url, debug_name="stock_{}.html".format(code))
-    except requests.RequestException:
+        html = fetcher.get(url, debug_name="stock_{}.html".format(code))
+    except Exception:
         return {"sell": None, "buy": None, "ratio": None, "buy_oldest": None}
 
     soup = BeautifulSoup(html, "lxml")
@@ -290,11 +204,11 @@ def fetch_credit_data(code, session=None):
         CREDIT_HEADER_ALIASES["sell"],
         CREDIT_HEADER_ALIASES["buy"],
     ]
-    table, header_texts = _find_table_by_headers(soup, required_groups)
+    table, header_texts = find_table_by_headers(soup, required_groups)
     if table is None:
         return {"sell": None, "buy": None, "ratio": None, "buy_oldest": None}
 
-    col = _column_index_map(header_texts, CREDIT_HEADER_ALIASES)
+    col = column_index_map(header_texts, CREDIT_HEADER_ALIASES)
     body = table.find("tbody") or table
     rows = []
     for tr in body.find_all("tr"):
@@ -302,7 +216,7 @@ def fetch_credit_data(code, session=None):
         if len(cells) <= max(col.values()):
             continue
         rows.append({
-            "date": _norm_text(cells[col["date"]].get_text()),
+            "date": norm_text(cells[col["date"]].get_text()),
             "sell": parse_number(cells[col["sell"]].get_text()),
             "buy": parse_number(cells[col["buy"]].get_text()),
             "ratio": parse_number(cells[col["ratio"]].get_text()) if "ratio" in col else None,
