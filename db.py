@@ -317,6 +317,15 @@ CREATE TABLE IF NOT EXISTS nikkei225jp_fear_index (
     vix REAL,
     timestamp TEXT
 );
+
+-- マクロ・需給データ同期(jpx/edinet/nikkei225jp)の実行記録。
+-- 実データの日付(公表ラグがあり「本日」と一致しないことが多い)ではなく、
+-- 「このスクリプトを今日すでに実行したか」を管理し、ボタン連打での無駄な
+-- 再取得(特にnikkei225jp.comはPlaywrightでの取得に時間がかかる)を防ぐ。
+CREATE TABLE IF NOT EXISTS macro_sync_log (
+    source TEXT PRIMARY KEY,
+    last_run_date DATE NOT NULL
+);
 """
 
 
@@ -372,6 +381,24 @@ def get_stock_name(conn, code: str) -> str | None:
 def get_latest_edinet_date(conn) -> str | None:
     row = conn.execute("SELECT MAX(date) FROM edinet_large_holdings").fetchone()
     return row[0] if row else None
+
+
+def get_last_macro_sync(conn, source: str) -> str | None:
+    """指定ソース(jpx/edinet/nikkei225jp)を最後に実行した日付を返す(未実行ならNone)。"""
+    row = conn.execute("SELECT last_run_date FROM macro_sync_log WHERE source = ?", (source,)).fetchone()
+    return row[0] if row else None
+
+
+def set_last_macro_sync(conn, source: str, run_date: str):
+    conn.execute(
+        """
+        INSERT INTO macro_sync_log (source, last_run_date)
+        VALUES (?, ?)
+        ON CONFLICT(source) DO UPDATE SET last_run_date = excluded.last_run_date
+        """,
+        (source, run_date),
+    )
+    conn.commit()
 
 
 def save_sector_short_ratios(conn, date: str, sector_ratios: dict[str, float]):
