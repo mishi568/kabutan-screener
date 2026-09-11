@@ -36,14 +36,14 @@ status_msg.caption("サイドバーのボタンを押すと、ここに進捗と
 st.divider()
 
 # ============ メイン画面：AIダイジェスト（コピーしてAIに貼り付け） ============
-st.subheader("📋 AIダイジェスト（コピーしてAIチャットに貼り付け）")
 brief_files = sorted(Path(".").glob("ai_brief_*.md"), reverse=True)
-if brief_files:
-    latest_brief = brief_files[0]
-    st.caption(f"{latest_brief.name}　※コードブロック右上のアイコンでコピーできます")
-    st.code(latest_brief.read_text(encoding="utf-8"), language="markdown")
-else:
-    st.info("まだダイジェストがありません。サイドバーの「🚀 全自動実行」または⑥を実行してください。")
+with st.expander("📋 AIダイジェスト（コピーしてAIチャットに貼り付け）", expanded=False):
+    if brief_files:
+        latest_brief = brief_files[0]
+        st.caption(f"{latest_brief.name}　※コードブロック右上のアイコンでコピーできます")
+        st.code(latest_brief.read_text(encoding="utf-8"), language="markdown")
+    else:
+        st.info("まだダイジェストがありません。サイドバーの「🚀 全自動実行」または⑥を実行してください。")
 st.divider()
 
 
