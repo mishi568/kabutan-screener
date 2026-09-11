@@ -2,3 +2,10 @@ requests
 pandas
 lxml
 streamlit
+
+# マクロ・需給データ(JPX公式/EDINET/nikkei225jp.com)連携用
+beautifulsoup4
+pdfplumber
+openpyxl
+xlrd
+playwright

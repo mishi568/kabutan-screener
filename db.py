@@ -106,6 +106,217 @@ CREATE TABLE IF NOT EXISTS holdings_price_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_holdings_price_date ON holdings_price_history(date);
+
+-- ============================================================
+-- マクロ・需給データ（株探以外のデータ源: JPX公式・EDINET・nikkei225jp.com）
+-- ============================================================
+
+-- JPX公式: 空売り集計（全体）
+CREATE TABLE IF NOT EXISTS jpx_short_selling (
+    date TEXT PRIMARY KEY,
+    short_selling_ratio REAL,
+    short_selling_value REAL,
+    total_value REAL,
+    regulated_ratio REAL,
+    non_regulated_ratio REAL,
+    timestamp TEXT
+);
+
+-- JPX公式: 空売り集計（33業種別）
+CREATE TABLE IF NOT EXISTS jpx_short_selling_sectors (
+    date TEXT NOT NULL,
+    sector TEXT NOT NULL,
+    short_ratio REAL,
+    PRIMARY KEY (date, sector)
+);
+
+-- JPX公式: 投資部門別売買動向
+CREATE TABLE IF NOT EXISTS jpx_investor_trends (
+    date TEXT PRIMARY KEY,
+    foreign_net REAL,
+    individual_net REAL,
+    trust_bank_net REAL,
+    investment_trust_net REAL,
+    business_corp_net REAL,
+    other_net REAL,
+    timestamp TEXT
+);
+
+-- JPX公式: 銘柄別信用取引残高（週次）
+CREATE TABLE IF NOT EXISTS jpx_margin_positions (
+    date TEXT NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT,
+    margin_buy REAL,
+    margin_sell REAL,
+    margin_ratio REAL,
+    margin_buy_change REAL,
+    margin_sell_change REAL,
+    timestamp TEXT,
+    PRIMARY KEY (date, code)
+);
+
+-- JPX公式: 機関投資家の個別銘柄空売りポジション（0.5%以上の開示義務分）
+CREATE TABLE IF NOT EXISTS jpx_short_positions (
+    date TEXT NOT NULL,
+    code TEXT NOT NULL,
+    holder_name TEXT NOT NULL,
+    short_position_ratio REAL,
+    short_position_shares REAL,
+    disclosure_date TEXT,
+    timestamp TEXT,
+    PRIMARY KEY (date, code, holder_name)
+);
+
+-- EDINET: 大量保有報告書（5%以上）
+CREATE TABLE IF NOT EXISTS edinet_large_holdings (
+    doc_id TEXT PRIMARY KEY,
+    date TEXT,
+    code TEXT,
+    issuer_name TEXT,
+    holder_name TEXT,
+    holding_ratio REAL,
+    report_type TEXT,
+    purpose TEXT,
+    submission_date TEXT,
+    timestamp TEXT
+);
+
+-- nikkei225jp.com: 日本225 PER/PBR
+CREATE TABLE IF NOT EXISTS nikkei_per_records (
+    date TEXT PRIMARY KEY,
+    price REAL,
+    per REAL,
+    pbr REAL,
+    eps REAL,
+    bps REAL,
+    earnings_yield REAL,
+    dividend_yield REAL,
+    jgb_yield REAL,
+    timestamp TEXT
+);
+
+-- nikkei225jp.com: 騰落レシオ
+CREATE TABLE IF NOT EXISTS nikkei_touraku_records (
+    date TEXT PRIMARY KEY,
+    price REAL,
+    price_change REAL,
+    prime_volume REAL,
+    advancing_count REAL,
+    declining_count REAL,
+    touraku_6d REAL,
+    touraku_10d REAL,
+    touraku_15d REAL,
+    touraku_25d REAL,
+    timestamp TEXT
+);
+
+-- nikkei225jp.com: 信用残高（日本市況、sinyou.php）
+CREATE TABLE IF NOT EXISTS nikkei_margin_records (
+    date TEXT PRIMARY KEY,
+    margin_buy REAL,
+    margin_sell REAL,
+    margin_buy_shares REAL,
+    margin_sell_shares REAL,
+    margin_buy_change_pct REAL,
+    margin_sell_change_pct REAL,
+    margin_ratio REAL,
+    profit_loss_ratio REAL,
+    timestamp TEXT
+);
+
+-- nikkei225jp.com: 投資主体別売買状況（週次、JPX投資部門別動向の補完・裏取り用）
+CREATE TABLE IF NOT EXISTS nikkei225jp_investor_trends (
+    date TEXT PRIMARY KEY,
+    price REAL,
+    price_change_pct REAL,
+    foreign_net REAL,
+    dealer_net REAL,
+    individual_net REAL,
+    individual_cash_net REAL,
+    individual_margin_net REAL,
+    investment_trust_net REAL,
+    business_corp_net REAL,
+    other_corp_net REAL,
+    trust_bank_net REAL,
+    insurance_net REAL,
+    bank_net REAL,
+    timestamp TEXT
+);
+
+-- nikkei225jp.com: 空売り比率（JPX空売り集計の補完・裏取り用）
+CREATE TABLE IF NOT EXISTS nikkei225jp_short_selling (
+    date TEXT PRIMARY KEY,
+    price REAL,
+    price_change REAL,
+    prime_trading_value REAL,
+    prime_volume REAL,
+    short_ratio_total REAL,
+    short_ratio_regulated REAL,
+    short_ratio_non_regulated REAL,
+    timestamp TEXT
+);
+
+-- nikkei225jp.com: NT倍率（日経平均/TOPIX）
+CREATE TABLE IF NOT EXISTS nikkei225jp_nt_ratio (
+    date TEXT PRIMARY KEY,
+    nt_ratio REAL,
+    nj_ratio REAL,
+    jt_ratio REAL,
+    nikkei_price REAL,
+    nikkei_change_pct REAL,
+    topix_price REAL,
+    topix_change_pct REAL,
+    jpx400_price REAL,
+    jpx400_change_pct REAL,
+    usdjpy REAL,
+    timestamp TEXT
+);
+
+-- nikkei225jp.com: 裁定買い残/売り残（日次・株数ベース）
+CREATE TABLE IF NOT EXISTS nikkei225jp_arbitrage (
+    date TEXT PRIMARY KEY,
+    price REAL,
+    price_change REAL,
+    prime_trading_value REAL,
+    buy_shares REAL,
+    sell_shares REAL,
+    net_shares REAL,
+    net_change REAL,
+    timestamp TEXT
+);
+
+-- nikkei225jp.com: 週次建玉数手口（日経225先物、証券会社カテゴリ別）
+CREATE TABLE IF NOT EXISTS nikkei225jp_futures_broker (
+    date TEXT PRIMARY KEY,
+    price REAL,
+    price_change REAL,
+    foreign_buy REAL,
+    foreign_sell REAL,
+    foreign_net REAL,
+    foreign_net_change REAL,
+    domestic_buy REAL,
+    domestic_sell REAL,
+    domestic_net REAL,
+    domestic_net_change REAL,
+    retail_buy REAL,
+    retail_sell REAL,
+    retail_net REAL,
+    retail_net_change REAL,
+    timestamp TEXT
+);
+
+-- nikkei225jp.com: 恐怖指数（日本VI・VSTOXX・VIX）
+CREATE TABLE IF NOT EXISTS nikkei225jp_fear_index (
+    date TEXT PRIMARY KEY,
+    price REAL,
+    price_change REAL,
+    prime_volume REAL,
+    japan_vi REAL,
+    vstoxx REAL,
+    vix REAL,
+    timestamp TEXT
+);
 """
 
 
@@ -150,6 +361,28 @@ def upsert_stock(conn, code, name, market, seen_date):
             last_seen = excluded.last_seen
         """,
         (code, name, market, seen_date),
+    )
+
+
+def get_stock_name(conn, code: str) -> str | None:
+    row = conn.execute("SELECT name FROM stocks WHERE code = ?", (code,)).fetchone()
+    return row[0] if row else None
+
+
+def get_latest_edinet_date(conn) -> str | None:
+    row = conn.execute("SELECT MAX(date) FROM edinet_large_holdings").fetchone()
+    return row[0] if row else None
+
+
+def save_sector_short_ratios(conn, date: str, sector_ratios: dict[str, float]):
+    """JPX空売り集計PDFの33業種別空売り比率を保存する(jpx_short_selling_sectors、date×sector単位)。"""
+    conn.executemany(
+        """
+        INSERT INTO jpx_short_selling_sectors (date, sector, short_ratio)
+        VALUES (?, ?, ?)
+        ON CONFLICT(date, sector) DO UPDATE SET short_ratio = excluded.short_ratio
+        """,
+        [(date, sector, ratio) for sector, ratio in sector_ratios.items()],
     )
 
 
@@ -213,6 +446,22 @@ def insert_stock_detail(conn, code: str, snapshot_date: str, data_json: str):
         (code, snapshot_date, data_json),
     )
     conn.commit()
+
+
+def upsert_record(conn, table: str, key_columns: tuple[str, ...], record: dict):
+    """dictのキーをそのまま列名として使い、INSERT ... ON CONFLICT DO UPDATEを組み立てる。
+    JPX/EDINET/nikkei225jp.com系の新規テーブル(13種)はいずれも列構成が異なるため、
+    テーブルごとに個別の upsert_xxx() 関数を書く代わりにこの汎用関数を共有する。
+    """
+    columns = list(record.keys())
+    column_list = ", ".join(columns)
+    placeholders = ", ".join(f":{c}" for c in columns)
+    update_clause = ", ".join(f"{c}=excluded.{c}" for c in columns if c not in key_columns)
+    key_list = ", ".join(key_columns)
+    sql = f"INSERT INTO {table} ({column_list}) VALUES ({placeholders})"
+    if update_clause:
+        sql += f" ON CONFLICT({key_list}) DO UPDATE SET {update_clause}"
+    conn.execute(sql, record)
 
 
 def get_progress(conn, code: str) -> tuple[int, bool]:

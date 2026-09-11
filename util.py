@@ -15,10 +15,12 @@ def is_fund_market(market: str) -> bool:
 
 
 def pct_to_float(s):
-    """'+20.81%' のような文字列を 20.81 のようなfloatに変換する。失敗したらNone。"""
+    """'+20.81%' や '8,461.21' のような文字列をfloatに変換する。失敗したらNone。"""
     if s is None:
         return None
-    s = str(s).replace("%", "").replace("+", "").strip()
+    s = str(s).replace(",", "").replace("%", "").replace("+", "").strip()
+    if s in ("－", "-", "—", ""):
+        return None
     try:
         return float(s)
     except ValueError:

@@ -1,0 +1,759 @@
+# -*- coding: utf-8 -*-
+"""JPX公式ファイル(PDF/Excel/CSV)の解析・DB取り込み
+
+jpx_sync.py がダウンロードしたファイル(または手動ダウンロードしたファイル)を解析し、
+以下へ保存する:
+  - 33業種別空売り比率  → jpx_short_selling_sectors
+  - 全体の空売り比率    → jpx_short_selling
+  - 投資部門別売買動向  → jpx_investor_trends
+  - 個別銘柄信用取引残高 → jpx_margin_positions
+  - 機関投資家の個別銘柄空売りポジション(0.5%以上) → jpx_short_positions
+"""
+import re
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+
+import db
+from util import pct_to_float as clean_numeric
+
+SECTOR_33_NAMES = [
+    "水産・農林業", "鉱業", "建設業", "食料品", "繊維製品",
+    "パルプ・紙", "化学", "医薬品", "石油・石炭製品", "ゴム製品",
+    "ガラス・土石製品", "鉄鋼", "非鉄金属", "金属製品", "機械",
+    "電気機器", "輸送用機器", "精密機器", "その他製品", "電気・ガス業",
+    "陸運業", "海運業", "空運業", "倉庫・運輸関連業", "情報・通信業",
+    "卸売業", "小売業", "銀行業", "証券、商品先物取引業", "保険業",
+    "その他金融業", "不動産業", "サービス業", "その他(33業種外)",
+]
+
+_CSV_ENCODINGS = ["utf-8-sig", "shift_jis", "cp932", "euc-jp", "utf-8"]
+
+
+def import_file(conn, filepath: str) -> dict:
+    """ファイル形式を検出し、解析してDBへ保存する"""
+    path = Path(filepath)
+    if not path.exists():
+        return {"success": False, "error": f"ファイルが見つかりません: {filepath}"}
+
+    ext = path.suffix.lower()
+    if ext not in (".csv", ".xlsx", ".xls", ".pdf"):
+        return {"success": False, "error": f"未対応のファイル形式です ({ext})。PDF、CSV、またはExcelファイルを指定してください。"}
+
+    try:
+        if ext == ".pdf":
+            return _parse_and_save_pdf(conn, path)
+
+        file_type = detect_file_type(path)
+        if file_type == "SHORT_POSITIONS":
+            return _parse_and_save_short_positions(conn, path)
+        if file_type == "INVESTOR_TRENDS":
+            return _parse_and_save_investor_trends(conn, path)
+        if file_type == "SHORT_SELLING":
+            return _parse_and_save_short_selling(conn, path)
+        if file_type == "MARGIN_POSITIONS":
+            return _parse_and_save_margin_positions(conn, path)
+        return {"success": False, "error": "JPXデータ(空売り集計、投資部門別売買状況、信用取引残高、空売り残高情報)の形式を自動判別できませんでした。"}
+    except Exception as e:
+        return {"success": False, "error": f"インポート処理中にエラーが発生しました: {e}"}
+
+
+def detect_file_type(path: Path) -> str:
+    """ファイル名とファイル内容からJPXデータの種類を判定する"""
+    filename = path.name.lower()
+    ext = path.suffix.lower()
+
+    if "short_position" in filename or "空売り残高" in filename:
+        return "SHORT_POSITIONS"
+    if any(k in filename for k in ["short", "karauri", "空売り", "-g.", "-m."]):
+        return "SHORT_SELLING"
+    if any(k in filename for k in ["stock_vol", "stock_val", "investor", "主体別", "部門別", "trends"]):
+        return "INVESTOR_TRENDS"
+    if any(k in filename for k in ["mtdaily", "margin", "shinyo", "信用残", "週末残高"]):
+        return "MARGIN_POSITIONS"
+
+    content_sample = ""
+    if ext == ".csv":
+        for enc in _CSV_ENCODINGS:
+            try:
+                with open(path, "r", encoding=enc, errors="ignore") as f:
+                    content_sample = "".join(f.readline() for _ in range(25))
+                break
+            except (UnicodeDecodeError, OSError):
+                continue
+    elif ext in (".xlsx", ".xls"):
+        try:
+            df_sample = pd.read_excel(path, header=None, nrows=20)
+            content_sample = df_sample.to_string()
+        except (ValueError, OSError):
+            pass
+
+    if any(k in content_sample for k in ["空売り残高", "Outstanding Short Selling Positions", "空売り残高割合"]):
+        return "SHORT_POSITIONS"
+    if any(k in content_sample for k in ["海外", "外国人", "個人", "信託", "Brokerage", "Investor Type", "Foreigners", "Individuals"]):
+        return "INVESTOR_TRENDS"
+    if any(k in content_sample for k in ["空売り", "規制", "Short Selling", "実線"]):
+        return "SHORT_SELLING"
+    if any(k in content_sample for k in ["信用", "売残", "買残", "貸借", "Margin Trading", "mtdaily"]):
+        return "MARGIN_POSITIONS"
+
+    return "UNKNOWN"
+
+
+def _extract_date_from_text(text: str, filename: str = "") -> str | None:
+    m = re.search(r"(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})", text)
+    if m:
+        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+
+    m = re.search(r"(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日", text)
+    if m:
+        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+
+    m = re.search(r"20(\d{2})(\d{2})(\d{2})", filename)
+    if m:
+        return f"20{m.group(1)}-{m.group(2)}-{m.group(3)}"
+
+    m = re.search(r"^(\d{2})(\d{2})(\d{2})", filename)
+    if m:
+        return f"20{m.group(1)}-{m.group(2)}-{m.group(3)}"
+
+    return None
+
+
+def _normalize_date(date_str) -> str | None:
+    """「YYYY/MM/DD」「YYYY年M月D日」等の表記を YYYY-MM-DD に変換する"""
+    if not date_str:
+        return None
+    s = str(date_str).strip()
+    m = re.search(r"(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})", s)
+    if m:
+        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    m = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", s)
+    if m:
+        return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    m = re.search(r"(\d{2})/(\d{2})/(\d{2})", s)
+    if m:
+        return f"20{int(m.group(1)):02d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    return None
+
+
+def _to_float(val, default: float = 0.0) -> float:
+    try:
+        s = str(val).replace(",", "").replace("▲", "-").replace("▼", "-").replace("+", "").strip()
+        return float(s) if s and s != "-" else default
+    except (ValueError, TypeError):
+        return default
+
+
+# ---------------------------------------------------------------------------
+# PDF (空売り集計・個別銘柄信用残高)
+# ---------------------------------------------------------------------------
+
+def _parse_and_save_pdf(conn, path: Path) -> dict:
+    try:
+        import pdfplumber
+    except ImportError:
+        return {"success": False, "error": "PDFの読み込みに必要なライブラリ(pdfplumber)がインストールされていません。"}
+
+    filename = path.name.lower()
+
+    with pdfplumber.open(path) as pdf:
+        all_text = ""
+        all_tables = []
+        for page in pdf.pages:
+            all_text += (page.extract_text() or "") + "\n"
+            all_tables.extend(page.extract_tables() or [])
+
+    date_str = _extract_date_from_text(all_text, filename) or datetime.now().strftime("%Y-%m-%d")
+
+    # Priority 0: 投資部門別売買状況 (stock_val_*.pdf / stock_vol_*.pdf)
+    if "stock_val" in filename or "stock_vol" in filename or "投資部門別" in all_text:
+        return _parse_and_save_investor_trends_pdf(conn, all_text, all_tables)
+
+    # Priority 1: 個別銘柄信用取引残高 (mtdailyk*.pdf)
+    if "mtdaily" in filename or "個別銘柄信用取引残高" in all_text or "Outstanding Margin Trading by Issue" in all_text or "JP3" in all_text:
+        margin_records = []
+        for line in all_text.splitlines():
+            isin_match = re.search(r"([0-9A-Z]{4,5}0?)\s+(JP[0-9A-Z]{10})\s+(.*)", line)
+            if not isin_match:
+                continue
+            raw_code, rest = isin_match.group(1).strip(), isin_match.group(3)
+            code = raw_code[:4]
+
+            cleaned_rest = rest.replace("▲ ", "-").replace("▲", "-").replace("▼ ", "-").replace("▼", "-")
+            nums = []
+            for t in cleaned_rest.split():
+                t_clean = t.replace(",", "").replace("*", "").strip()
+                if t_clean == "-":
+                    nums.append(0.0)
+                else:
+                    try:
+                        nums.append(float(t_clean))
+                    except ValueError:
+                        pass
+
+            if len(nums) < 2:
+                continue
+
+            sell_shares = nums[0]
+            sell_change = nums[1] if len(nums) > 1 else 0.0
+            buy_shares = nums[3] if len(nums) > 3 else (nums[1] if len(nums) == 2 else 0.0)
+            buy_change = nums[4] if len(nums) > 4 else 0.0
+
+            # ETF/投資信託の行("J"区分)は通常株式("B"区分)と列構成が異なり、同じ位置指定では
+            # 崩れて負の残高になることがある。残高は本来非負のはずなので、その場合は行ごと捨てる。
+            if sell_shares < 0 or buy_shares < 0:
+                continue
+
+            # 注意: nums[6]はPDF内の「取組比率」(売残÷買残×100の%値)であり、
+            # 信用倍率(買残÷売残の倍率)とは定義が異なるため使わない。
+            # 売り残ゼロは「倍率不明」を意味するため、0.0ではなくNoneにする。
+            margin_ratio = round(buy_shares / sell_shares, 2) if sell_shares > 0 else None
+
+            margin_records.append({
+                "date": date_str, "code": code, "name": db.get_stock_name(conn, code) or f"銘柄{code}",
+                "margin_sell": sell_shares, "margin_buy": buy_shares, "margin_ratio": margin_ratio,
+                "margin_sell_change": sell_change, "margin_buy_change": buy_change,
+            })
+
+        if margin_records:
+            for rec in margin_records:
+                db.upsert_record(conn, "jpx_margin_positions", ("date", "code"), rec)
+            conn.commit()
+            return {
+                "success": True, "file_type": "MARGIN_POSITIONS", "date": date_str,
+                "rows_saved": len(margin_records),
+                "message": f"【個別銘柄信用取引残高】{date_str} の信用残データ({len(margin_records)}銘柄)を正常に取り込みました。",
+            }
+
+    # Priority 2: 空売り集計(全体 or 33業種)
+    sector_rows, overall_rows = [], []
+    for t in all_tables:
+        for r in t:
+            if not r or not any(r):
+                continue
+            pcts = [cell for cell in r if cell and "%" in str(cell)]
+            if len(pcts) >= 3:
+                sector_rows.append(r)
+            elif len(pcts) >= 2 or (len(r) >= 5 and any("%" in str(c) for c in r if c)):
+                overall_rows.append(r)
+
+    if len(sector_rows) >= 25 or "-g" in filename or "業種" in all_text:
+        sector_ratios = {}
+        for i, r in enumerate(sector_rows):
+            # PDFの1列目に実際の業種名が入っているのでそれを優先し、
+            # 万一欠けていた場合のみ標準33業種名リストの並び順にフォールバックする。
+            first_cell = (r[0] or "").strip() if r else ""
+            sec_name = first_cell if first_cell else (SECTOR_33_NAMES[i] if i < len(SECTOR_33_NAMES) else f"業種{i + 1}")
+            pcts = [cell for cell in r if cell and "%" in str(cell)]
+            if len(pcts) >= 3:
+                try:
+                    p_reg = float(pcts[1].replace("%", "").replace(",", "").strip())
+                    p_non_reg = float(pcts[2].replace("%", "").replace(",", "").strip())
+                    sector_ratios[sec_name] = round(p_reg + p_non_reg, 2)
+                except ValueError:
+                    pass
+
+        if sector_ratios:
+            db.save_sector_short_ratios(conn, date_str, sector_ratios)
+            conn.commit()
+            return {
+                "success": True, "file_type": "SHORT_SELLING_SECTORS", "date": date_str,
+                "rows_saved": len(sector_ratios),
+                "message": f"【空売り集計(33業種別)】{date_str} の33業種データを正常に取り込みました({len(sector_ratios)}業種)。",
+            }
+
+    if overall_rows or len(sector_rows) == 1 or "-m" in filename or "(a)/(d)" in all_text or "空売り" in all_text:
+        target_r = sector_rows[0] if sector_rows else (overall_rows[0] if overall_rows else None)
+        if target_r:
+            pcts = [cell for cell in target_r if cell and "%" in str(cell)]
+            if len(pcts) >= 3:
+                try:
+                    p_reg = float(pcts[1].replace("%", "").replace(",", "").strip())
+                    p_non_reg = float(pcts[2].replace("%", "").replace(",", "").strip())
+                    overall_ratio = round(p_reg + p_non_reg, 2)
+
+                    total_val = None
+                    nums = [cell for cell in target_r if cell and str(cell).replace(",", "").replace(".", "").strip().isdigit()]
+                    if nums:
+                        total_val = _to_float(nums[-1], default=None)
+
+                    db.upsert_record(conn, "jpx_short_selling", ("date",), {
+                        "date": date_str, "short_selling_ratio": overall_ratio,
+                        "regulated_ratio": p_reg, "non_regulated_ratio": p_non_reg,
+                        "total_value": total_val,
+                    })
+                    conn.commit()
+                    return {
+                        "success": True, "file_type": "SHORT_SELLING_OVERALL", "date": date_str, "rows_saved": 1,
+                        "message": f"【空売り集計(全体比率)】{date_str} の全体空売り比率 {overall_ratio}% を正常に取り込みました。",
+                    }
+                except ValueError:
+                    pass
+
+    return {"success": False, "error": f"PDFファイル({filename})から有効なJPXデータ(空売り集計・信用残高・主体別)を抽出できませんでした。"}
+
+
+# ---------------------------------------------------------------------------
+# 投資部門別売買動向 (PDF: stock_val_*.pdf / stock_vol_*.pdf)
+# ---------------------------------------------------------------------------
+
+# PDF内の投資主体カテゴリ名(日本語見出し) → jpx_investor_trends のカラム名
+_INVESTOR_CATEGORY_COLUMNS = {
+    "自己計": "other_net",
+    "海外投資家": "foreign_net",
+    "個人": "individual_net",
+    "投資信託": "investment_trust_net",
+    "事業法人": "business_corp_net",
+    "信託銀行": "trust_bank_net",
+}
+
+
+def _extract_investor_trends_week_end_date(all_text: str) -> str:
+    """「2026年9月第1週 ... ( 8/31 - 9/4 )」のような表記から最新週の終了日を抽出する"""
+    year_match = re.search(r"(\d{4})年(\d{1,2})月", all_text)
+    week_matches = re.findall(r"(\d{2})/(\d{2})[～\-](\d{2})/(\d{2})", all_text)
+    if week_matches:
+        _, _, end_month, end_day = week_matches[-1]
+        year = int(year_match.group(1)) if year_match else datetime.now().year
+        return f"{year:04d}-{int(end_month):02d}-{int(end_day):02d}"
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _parse_and_save_investor_trends_pdf(conn, all_text: str, all_tables: list) -> dict:
+    """投資部門別売買状況PDF(株数/金額共通レイアウト)を解析し、最新週の(買い-売り)純額を保存する。
+
+    各カテゴリは3行組(売り/買い/合計)で構成され、直近週の値は各行の7列目(index=6)。
+    """
+    date_str = _extract_investor_trends_week_end_date(all_text)
+
+    net_by_category: dict[str, dict] = {}
+    for table in all_tables:
+        current_category = None
+        for row in table:
+            if not row:
+                continue
+            label = row[0]
+            if label:
+                # 「法 人」「個 人」のようにカラム幅調整用の空白(全角含む)が漢字間に入るため除去する
+                jp_name = re.sub(r"[\s　]+", "", str(label).split("\n")[0])
+                current_category = _INVESTOR_CATEGORY_COLUMNS.get(jp_name)
+            if current_category is None or len(row) < 7:
+                continue
+            row_type = row[1]
+            if row_type not in ("売り", "買い"):
+                continue
+            value = clean_numeric(str(row[6])) if row[6] else None
+            net_by_category.setdefault(current_category, {})[row_type] = value
+
+    record = {"date": date_str}
+    for column in _INVESTOR_CATEGORY_COLUMNS.values():
+        parts = net_by_category.get(column, {})
+        sell, buy = parts.get("売り"), parts.get("買い")
+        record[column] = (buy - sell) if (buy is not None and sell is not None) else None
+
+    if not any(v is not None for k, v in record.items() if k != "date"):
+        return {"success": False, "error": "投資部門別売買状況PDFから有効なデータを抽出できませんでした。"}
+
+    db.upsert_record(conn, "jpx_investor_trends", ("date",), record)
+    conn.commit()
+    return {
+        "success": True, "file_type": "INVESTOR_TRENDS", "date": date_str, "rows_saved": 1,
+        "message": f"【投資部門別売買状況】{date_str}(週末時点)の主体別売買動向を正常に取り込みました。",
+    }
+
+
+# ---------------------------------------------------------------------------
+# 投資部門別売買動向 (CSV/Excel)
+# ---------------------------------------------------------------------------
+
+def _parse_and_save_investor_trends(conn, path: Path) -> dict:
+    ext = path.suffix.lower()
+    records_saved = 0
+    latest_date = None
+
+    if ext == ".csv":
+        df = None
+        for enc in _CSV_ENCODINGS[:4]:
+            try:
+                df = pd.read_csv(path, encoding=enc, skiprows=2)
+                break
+            except UnicodeDecodeError:
+                continue
+        if df is None:
+            return {"success": False, "error": "CSVファイルのエンコーディングを判定できませんでした。"}
+
+        for _, row in df.iterrows():
+            date_val = str(row.iloc[0]).strip()
+            if not date_val or date_val.lower() == "nan":
+                continue
+            formatted_date = _normalize_date(date_val)
+            if not formatted_date:
+                continue
+
+            rec = {
+                "date": formatted_date,
+                "foreign_net": _to_float(row.iloc[3]) if len(row) > 3 else 0.0,
+                "individual_net": _to_float(row.iloc[5]) if len(row) > 5 else 0.0,
+                "investment_trust_net": _to_float(row.iloc[8]) if len(row) > 8 else 0.0,
+                "business_corp_net": _to_float(row.iloc[9]) if len(row) > 9 else 0.0,
+                "trust_bank_net": _to_float(row.iloc[11]) if len(row) > 11 else 0.0,
+            }
+            db.upsert_record(conn, "jpx_investor_trends", ("date",), rec)
+            records_saved += 1
+            latest_date = formatted_date
+
+    elif ext in (".xlsx", ".xls"):
+        xl = pd.ExcelFile(path)
+        for sheet_name in xl.sheet_names:
+            df = xl.parse(sheet_name, header=None)
+
+            header_date_str = None
+            for r in range(min(15, len(df))):
+                row_text = " ".join(str(c) for c in df.iloc[r] if pd.notna(c))
+                d_match = re.search(r"\(?\s*(\d{1,2})[/月](\d{1,2})\s*[-〜~]\s*(\d{1,2})[/月](\d{1,2})\s*\)?", row_text)
+                if d_match:
+                    y = datetime.now().year
+                    header_date_str = f"{y:04d}-{int(d_match.group(3)):02d}-{int(d_match.group(4)):02d}"
+                    break
+            if not header_date_str:
+                fn_match = re.search(r"(\d{2})(\d{2})(\d{2})", path.name)
+                header_date_str = (
+                    f"20{fn_match.group(1)}-{fn_match.group(2)}-{fn_match.group(3)}"
+                    if fn_match else datetime.now().strftime("%Y-%m-%d")
+                )
+
+            data_start_row = None
+            for r in range(len(df)):
+                row_vals = [str(c) for c in df.iloc[r] if pd.notna(c)]
+                if any("海外投資家" in v or "外国人" in v or "Foreigners" in v or "個人" in v or "Individuals" in v for v in row_vals):
+                    data_start_row = r
+                    break
+            if data_start_row is None:
+                continue
+
+            def _extract_diff(row_idx):
+                if row_idx >= len(df):
+                    return 0.0
+                for c in reversed(list(df.iloc[row_idx])):
+                    if pd.notna(c):
+                        try:
+                            return _to_float(c)
+                        except (ValueError, TypeError):
+                            continue
+                return 0.0
+
+            foreign_net = individual_net = trust_net = investment_trust_net = business_corp_net = other_net = 0.0
+            for r in range(data_start_row, min(data_start_row + 40, len(df))):
+                row_str = " ".join(str(c) for c in df.iloc[r] if pd.notna(c))
+                if any(k in row_str for k in ["海外投資家", "外国人", "Foreigners"]):
+                    foreign_net = _extract_diff(r)
+                elif any(k in row_str for k in ["個人", "Individuals"]):
+                    individual_net = _extract_diff(r)
+                elif any(k in row_str for k in ["信託銀行", "Trust Banks"]):
+                    trust_net = _extract_diff(r)
+                elif any(k in row_str for k in ["投資信託", "Investment Trusts"]):
+                    investment_trust_net = _extract_diff(r)
+                elif any(k in row_str for k in ["事業法人", "Corporations", "Business Corps"]):
+                    business_corp_net = _extract_diff(r)
+                elif any(k in row_str for k in ["自己計", "Proprietary Total", "Proprietary"]):
+                    other_net = _extract_diff(r)
+
+            db.upsert_record(conn, "jpx_investor_trends", ("date",), {
+                "date": header_date_str, "foreign_net": foreign_net, "individual_net": individual_net,
+                "trust_bank_net": trust_net, "investment_trust_net": investment_trust_net,
+                "business_corp_net": business_corp_net, "other_net": other_net,
+            })
+            records_saved += 1
+            latest_date = header_date_str
+
+    if records_saved > 0:
+        conn.commit()
+        return {
+            "success": True, "file_type": "INVESTOR_TRENDS", "date": latest_date, "rows_saved": records_saved,
+            "message": f"【投資部門別売買状況】{latest_date}(計{records_saved}件)のデータを正常に取り込みました。",
+        }
+    return {"success": False, "error": "投資部門別売買状況の有効なデータ行を抽出できませんでした。"}
+
+
+# ---------------------------------------------------------------------------
+# 空売り集計 (CSV/Excel)
+# ---------------------------------------------------------------------------
+
+def _parse_and_save_short_selling(conn, path: Path) -> dict:
+    ext = path.suffix.lower()
+    date_str = None
+    overall_ratio = None
+    sectors_dict: dict[str, float] = {}
+
+    fn_match = re.search(r"(\d{4})[-_]?(\d{2})[-_]?(\d{2})", path.name)
+    if fn_match:
+        date_str = f"{fn_match.group(1)}-{fn_match.group(2)}-{fn_match.group(3)}"
+    else:
+        fn_match2 = re.search(r"(\d{2})(\d{2})(\d{2})", path.name)
+        if fn_match2:
+            date_str = f"20{fn_match2.group(1)}-{fn_match2.group(2)}-{fn_match2.group(3)}"
+
+    if ext == ".csv":
+        df = None
+        for enc in _CSV_ENCODINGS[:4]:
+            try:
+                df = pd.read_csv(path, encoding=enc, header=None)
+                break
+            except UnicodeDecodeError:
+                continue
+        if df is None:
+            return {"success": False, "error": "CSVファイルのエンコーディングを判定できませんでした。"}
+    elif ext in (".xlsx", ".xls"):
+        xl = pd.ExcelFile(path)
+        df = xl.parse(xl.sheet_names[0], header=None)
+    else:
+        return {"success": False, "error": "未対応の形式です。"}
+
+    for r in range(min(15, len(df))):
+        row_str = " ".join(str(c) for c in df.iloc[r] if pd.notna(c))
+        d_m = re.search(r"(\d{4})[/年.-](\d{1,2})[/月.-](\d{1,2})", row_str)
+        if d_m:
+            date_str = f"{int(d_m.group(1)):04d}-{int(d_m.group(2)):02d}-{int(d_m.group(3)):02d}"
+            break
+
+    for r in range(len(df)):
+        row_vals = [str(c).strip() for c in df.iloc[r] if pd.notna(c)]
+        row_str = " ".join(row_vals)
+
+        if "全体" in row_str or "合計" in row_str or "Total" in row_str:
+            for v in row_vals:
+                if "%" in v or (re.match(r"^\d+\.\d+$", v) and 20.0 <= float(v) <= 60.0):
+                    val = float(v.replace("%", ""))
+                    if overall_ratio is None:
+                        overall_ratio = val
+
+        for sec in SECTOR_33_NAMES:
+            if sec in row_str:
+                for v in reversed(row_vals):
+                    try:
+                        f_val = float(v.replace("%", "").replace(",", ""))
+                        if 10.0 <= f_val <= 70.0:
+                            sectors_dict[sec] = f_val
+                            break
+                    except ValueError:
+                        continue
+
+    if not date_str:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+    if overall_ratio is None and sectors_dict:
+        overall_ratio = round(sum(sectors_dict.values()) / len(sectors_dict), 2)
+
+    if overall_ratio is None and not sectors_dict:
+        return {"success": False, "error": "空売り集計の有効な比率データを抽出できませんでした。"}
+
+    db.upsert_record(conn, "jpx_short_selling", ("date",), {"date": date_str, "short_selling_ratio": overall_ratio or 40.0})
+    if sectors_dict:
+        db.save_sector_short_ratios(conn, date_str, sectors_dict)
+    conn.commit()
+
+    return {
+        "success": True, "file_type": "SHORT_SELLING", "date": date_str,
+        "rows_saved": len(sectors_dict) if sectors_dict else 1,
+        "message": f"【空売り集計】{date_str} の空売り比率データ(全体比率: {overall_ratio or '--'}% / 業種別: {len(sectors_dict)}件)を正常に取り込みました。",
+    }
+
+
+# ---------------------------------------------------------------------------
+# 個別銘柄信用取引残高 (CSV/Excel)
+# ---------------------------------------------------------------------------
+
+def _parse_and_save_margin_positions(conn, path: Path) -> dict:
+    ext = path.suffix.lower()
+    date_str = None
+
+    fn_match = re.search(r"(\d{4})[-_]?(\d{2})[-_]?(\d{2})", path.name)
+    if fn_match:
+        date_str = f"{fn_match.group(1)}-{fn_match.group(2)}-{fn_match.group(3)}"
+    else:
+        fn_match2 = re.search(r"(\d{2})(\d{2})(\d{2})", path.name)
+        if fn_match2:
+            date_str = f"20{fn_match2.group(1)}-{fn_match2.group(2)}-{fn_match2.group(3)}"
+
+    df = None
+    if ext == ".csv":
+        for enc in ["utf-8-sig", "cp932", "shift_jis", "utf-8", "euc-jp"]:
+            try:
+                df = pd.read_csv(path, encoding=enc, header=None)
+                break
+            except (UnicodeDecodeError, OSError):
+                continue
+    else:
+        try:
+            xl = pd.ExcelFile(path)
+            df = xl.parse(xl.sheet_names[0], header=None)
+        except (ValueError, OSError) as e:
+            return {"success": False, "error": f"Excelファイルの読み込みに失敗しました: {e}"}
+
+    if df is None:
+        return {"success": False, "error": "信用取引残高ファイルを読み込めませんでした。"}
+
+    if not date_str:
+        for r in range(min(10, len(df))):
+            row_str = " ".join(str(c) for c in df.iloc[r] if pd.notna(c))
+            d_m = re.search(r"(\d{4})[/年.-](\d{1,2})[/月.-](\d{1,2})", row_str)
+            if d_m:
+                date_str = f"{int(d_m.group(1)):04d}-{int(d_m.group(2)):02d}-{int(d_m.group(3)):02d}"
+                break
+        if not date_str:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+
+    margin_records = []
+    for _, row in df.iterrows():
+        row_vals = [str(v).strip() for v in row if pd.notna(v)]
+        if not row_vals or len(row_vals) < 3:
+            continue
+
+        code = None
+        name = ""
+
+        for i, v in enumerate(row_vals):
+            if re.match(r"^\d{4}0?$", v) and len(v) in (4, 5):
+                code = v[:4]
+                for prev_v in row_vals[:i]:
+                    if (
+                        len(prev_v) > 1
+                        and not re.match(r"^[\d,\.\-\+▲▼%]+$", prev_v)
+                        and prev_v not in ["B", "貸", "融", "スタンダード", "プライム", "グロース", "株", "Section", "Code", "Loan/\nMargin"]
+                    ):
+                        name = prev_v.replace("　", " ").replace(" 普通", "").replace("　普通", "").strip()
+                break
+
+        if not code:
+            for v in row_vals[:3]:
+                if re.match(r"^\d{4}$", v):
+                    code = v
+                    break
+
+        if not code:
+            continue
+
+        if not name:
+            for v in row_vals:
+                if len(v) > 1 and not re.match(r"^[\d,\.\-\+▲▼%]+$", v) and v != code and "JP" not in v:
+                    name = v.replace("　", " ").replace(" 普通", "").strip()
+                    break
+        if not name:
+            name = db.get_stock_name(conn, code) or f"銘柄{code}"
+
+        sell_shares = sell_change = buy_shares = buy_change = 0.0
+        if len(row) >= 14 and pd.notna(row.iloc[8]) and pd.notna(row.iloc[11]):
+            sell_shares = _to_float(row.iloc[8])
+            sell_change = _to_float(row.iloc[9])
+            buy_shares = _to_float(row.iloc[11])
+            buy_change = _to_float(row.iloc[12])
+        else:
+            nums = []
+            for v in row_vals:
+                if v == code or (len(v) == 5 and v[:4] == code):
+                    continue
+                try:
+                    nums.append(float(v.replace(",", "").replace("▲", "-").replace("▼", "-").replace("+", "").strip()))
+                except ValueError:
+                    pass
+            if len(nums) >= 2:
+                sell_shares, buy_shares = nums[0], nums[1]
+                sell_change = nums[2] if len(nums) > 2 else 0.0
+                buy_change = nums[3] if len(nums) > 3 else 0.0
+
+        # 売り残ゼロは「倍率不明」を意味するため0.0ではなくNoneにする
+        ratio = round(buy_shares / sell_shares, 2) if sell_shares > 0 else None
+
+        margin_records.append({
+            "date": date_str, "code": code, "name": name,
+            "margin_sell": sell_shares, "margin_buy": buy_shares, "margin_ratio": ratio,
+            "margin_sell_change": sell_change, "margin_buy_change": buy_change,
+        })
+
+    if not margin_records:
+        return {"success": False, "error": "信用取引残高の有効な銘柄データ行を抽出できませんでした。"}
+
+    for rec in margin_records:
+        db.upsert_record(conn, "jpx_margin_positions", ("date", "code"), rec)
+    conn.commit()
+
+    return {
+        "success": True, "file_type": "MARGIN_POSITIONS", "date": date_str, "rows_saved": len(margin_records),
+        "message": f"【個別銘柄信用取引残高】{date_str} の信用残高データ(計{len(margin_records)}銘柄)を正常に取り込みました。",
+    }
+
+
+# ---------------------------------------------------------------------------
+# 空売り残高に関する情報 (機関投資家の個別銘柄空売りポジション、0.5%以上)
+# ---------------------------------------------------------------------------
+
+def _parse_and_save_short_positions(conn, path: Path) -> dict:
+    """空売り残高に関する情報(XLS/XLSX)を解析し、jpx_short_positionsへ保存する。
+
+    列構成(6行目=日本語ヘッダー、7行目=英語ヘッダー、8行目からデータ):
+    計算年月日/銘柄コード/銘柄名/(空)/商号・名称・氏名/住所/委託者...(略)/
+    空売り残高割合/空売り残高数量/空売り残高売買単位数/直近計算年月日/直近空売り残高割合/備考
+    """
+    try:
+        xl = pd.ExcelFile(path)
+        df = xl.parse(xl.sheet_names[0], header=None)
+    except (ValueError, OSError) as e:
+        return {"success": False, "error": f"Excelファイルの読み込みに失敗しました: {e}"}
+
+    disclosure_date = None
+    header_row = None
+    for r in range(min(15, len(df))):
+        row_str = " ".join(str(c) for c in df.iloc[r] if pd.notna(c))
+        if "公表年月日" in row_str:
+            for c in df.iloc[r]:
+                if pd.notna(c) and not isinstance(c, str):
+                    disclosure_date = _normalize_date(c)
+                    break
+        if "計算年月日" in row_str and "銘柄コード" in row_str:
+            header_row = r
+            break
+
+    if header_row is None:
+        return {"success": False, "error": "空売り残高情報の見出し行を検出できませんでした。"}
+
+    records = []
+    for r in range(header_row + 2, len(df)):  # +2でJP/EN見出し両方をスキップ
+        row = df.iloc[r]
+        if row.isna().all():
+            continue
+
+        calc_date = _normalize_date(row.iloc[1])
+        code_raw = row.iloc[2]
+        holder_raw = row.iloc[5]
+        ratio_raw = row.iloc[10]
+        shares_raw = row.iloc[11]
+
+        if pd.isna(code_raw) or pd.isna(holder_raw) or not calc_date:
+            continue
+
+        try:
+            code = str(int(code_raw))
+        except (ValueError, TypeError):
+            code = str(code_raw).strip()
+
+        records.append({
+            "date": calc_date,
+            "code": code,
+            "holder_name": str(holder_raw).strip(),
+            "short_position_ratio": round(float(ratio_raw) * 100, 4) if pd.notna(ratio_raw) else None,
+            "short_position_shares": float(shares_raw) if pd.notna(shares_raw) else None,
+            "disclosure_date": disclosure_date or calc_date,
+        })
+
+    if not records:
+        return {"success": False, "error": "空売り残高情報の有効なデータ行を抽出できませんでした。"}
+
+    for rec in records:
+        db.upsert_record(conn, "jpx_short_positions", ("date", "code", "holder_name"), rec)
+    conn.commit()
+
+    return {
+        "success": True, "file_type": "SHORT_POSITIONS", "date": disclosure_date, "rows_saved": len(records),
+        "message": f"【空売り残高情報】{disclosure_date}(計{len(records)}件)の機関投資家別空売りポジションを正常に取り込みました。",
+    }
