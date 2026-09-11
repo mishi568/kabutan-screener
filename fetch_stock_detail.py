@@ -19,6 +19,14 @@ from parse import parse_stock_detail
 from db import get_conn, insert_stock_detail
 from util import get_top_codes_from_picks
 
+
+def has_detail_today(conn, code: str, today: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM stock_details WHERE code = ? AND snapshot_date = ?", (code, today)
+    ).fetchone()
+    return row is not None
+
+
 BASE_URL = "https://kabutan.jp/stock/?code={code}"
 
 
@@ -29,6 +37,7 @@ def main():
                          help="score_ranking.py(funnel_key=signal_score)の最新結果の上位N銘柄を対象にする")
     parser.add_argument("--sleep-min", type=float, default=3.0)
     parser.add_argument("--sleep-max", type=float, default=6.0)
+    parser.add_argument("--force", action="store_true", help="本日すでに取得済みの銘柄も強制的に再取得する")
     args = parser.parse_args()
 
     conn = get_conn()
@@ -49,9 +58,16 @@ def main():
     today = datetime.date.today().isoformat()
     print(f"対象銘柄: {codes}")
 
+    fetched_any = False
     for i, code in enumerate(codes):
-        if i > 0:
+        if not args.force and has_detail_today(conn, code, today):
+            print(f"[{i+1}/{len(codes)}] {code}  本日は取得済みのためスキップします（--forceで強制再取得できます）")
+            continue
+
+        if fetched_any:
             time.sleep(random.uniform(args.sleep_min, args.sleep_max))
+        fetched_any = True
+
         url = BASE_URL.format(code=code)
         print(f"[{i+1}/{len(codes)}] {code} -> {url}")
         try:
