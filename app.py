@@ -126,6 +126,7 @@ if st.sidebar.button("🚀 全自動実行（地合い＋①〜⑥をまとめ�
         ),
         (["compile_ai_brief.py", "--top", str(top_n)], "⑥ AIダイジェスト生成 (compile_ai_brief.py)", None),
         (["fetch_holdings_price.py"], "💼 保有銘柄の株価更新 (fetch_holdings_price.py)", None),
+        (["run_macro_sync.py"], "🌐 マクロ・需給データ取得 (run_macro_sync.py)", 14),
     ]
 
     overall = st.sidebar.empty()
@@ -183,14 +184,17 @@ if st.sidebar.button("🌐 地合い（市場指数）を取得", use_container_
 if st.sidebar.button("💼 保有銘柄の株価を更新", use_container_width=True):
     run_script(["fetch_holdings_price.py"], "保有銘柄の株価更新 (fetch_holdings_price.py)")
 
+if st.sidebar.button("🌐 マクロ・需給データを取得（JPX/EDINET/nikkei225jp.com）", use_container_width=True):
+    run_script(["run_macro_sync.py"], "マクロ・需給データ取得 (run_macro_sync.py)", total_steps=14)
+
 st.sidebar.divider()
 if st.sidebar.button("データ健全性チェック", use_container_width=True):
     run_script(["check_data_health.py"], "健全性チェック (check_data_health.py)")
 
 
 # ============ メイン：タブ ============
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-    ["📊 スコアリング結果", "📋 ランキング一覧", "📈 個別銘柄チャート", "🗂 データ概況", "🎯 シグナル勝率", "💼 保有銘柄"]
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+    ["📊 スコアリング結果", "📋 ランキング一覧", "📈 個別銘柄チャート", "🗂 データ概況", "🎯 シグナル勝率", "💼 保有銘柄", "🌐 マクロ・需給データ"]
 )
 
 conn = get_conn()
@@ -461,5 +465,95 @@ with tab6:
                 st.dataframe(pd.DataFrame(mh), use_container_width=True, hide_index=True)
         else:
             st.info("この銘柄の参考情報（PER/PBR等）がまだありません。「💼 保有銘柄の株価を更新」を実行してください。")
+
+with tab7:
+    st.subheader("🌐 マクロ・需給データ")
+    st.caption(
+        "株探以外のデータ源（JPX公式・EDINET・nikkei225jp.com）。"
+        "サイドバーの「🌐 マクロ・需給データを取得」または「🚀 全自動実行」で更新できます。"
+    )
+
+    def _latest_row(table: str):
+        row = conn.execute(f"SELECT * FROM {table} ORDER BY date DESC LIMIT 1").fetchone()
+        if row is None:
+            return None
+        cols = [d[0] for d in conn.execute(f"SELECT * FROM {table} LIMIT 0").description]
+        return dict(zip(cols, row))
+
+    nt = _latest_row("nikkei225jp_nt_ratio")
+    fear = _latest_row("nikkei225jp_fear_index")
+    arb = _latest_row("nikkei225jp_arbitrage")
+    karauri = _latest_row("nikkei225jp_short_selling")
+    sinyou = _latest_row("nikkei_margin_records")
+
+    if not any([nt, fear, arb, karauri, sinyou]):
+        st.info("まだデータがありません。サイドバーの「🌐 マクロ・需給データを取得」を実行してください。")
+    else:
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("NT倍率（日経平均/TOPIX）", f"{nt['nt_ratio']:.2f}" if nt and nt["nt_ratio"] is not None else "-",
+                   help=f"基準日: {nt['date']}" if nt else None)
+        c2.metric("日本VI（恐怖指数）", f"{fear['japan_vi']:.2f}" if fear and fear["japan_vi"] is not None else "-",
+                   help=f"基準日: {fear['date']}" if fear else None)
+        c3.metric("裁定買い残-売り残差引（千株）",
+                   f"{arb['net_shares']:,.0f}" if arb and arb["net_shares"] is not None else "-",
+                   help=f"基準日: {arb['date']}" if arb else None)
+        c4.metric("空売り比率（nikkei225jp.com）",
+                   f"{karauri['short_ratio_total']:.1f}%" if karauri and karauri["short_ratio_total"] is not None else "-",
+                   help=f"基準日: {karauri['date']}" if karauri else None)
+        c5.metric("信用倍率（東証全体）",
+                   f"{sinyou['margin_ratio']:.2f}倍" if sinyou and sinyou["margin_ratio"] is not None else "-",
+                   help=f"基準日: {sinyou['date']}" if sinyou else None)
+
+    st.divider()
+
+    st.subheader("📉 JPX信用倍率が低い個別銘柄（売り長＝踏み上げ期待）")
+    df_low_margin = pd.read_sql_query(
+        """
+        SELECT code, name, margin_buy, margin_sell, margin_ratio, date
+        FROM jpx_margin_positions
+        WHERE date = (SELECT MAX(date) FROM jpx_margin_positions)
+          AND margin_ratio IS NOT NULL
+        ORDER BY margin_ratio ASC
+        LIMIT 30
+        """,
+        conn,
+    )
+    if df_low_margin.empty:
+        st.info("データがありません。")
+    else:
+        st.dataframe(df_low_margin, use_container_width=True, hide_index=True)
+
+    st.subheader("🏦 機関投資家の空売りポジション集中銘柄（0.5%ルール開示分）")
+    df_short_conc = pd.read_sql_query(
+        """
+        SELECT code, SUM(short_position_ratio) AS total_ratio, COUNT(*) AS holder_count, MAX(date) AS date
+        FROM jpx_short_positions
+        WHERE date = (SELECT MAX(date) FROM jpx_short_positions)
+        GROUP BY code
+        ORDER BY total_ratio DESC
+        LIMIT 30
+        """,
+        conn,
+    )
+    if df_short_conc.empty:
+        st.info("データがありません。")
+    else:
+        st.dataframe(df_short_conc, use_container_width=True, hide_index=True)
+
+    st.subheader("📄 EDINET大量保有報告書（直近30日）")
+    df_edinet = pd.read_sql_query(
+        """
+        SELECT date, code, issuer_name, holder_name, holding_ratio, report_type
+        FROM edinet_large_holdings
+        WHERE date >= date('now', '-30 days')
+        ORDER BY date DESC
+        LIMIT 50
+        """,
+        conn,
+    )
+    if df_edinet.empty:
+        st.info("データがありません（EDINET_API_KEY未設定の場合は取得されません）。")
+    else:
+        st.dataframe(df_edinet, use_container_width=True, hide_index=True)
 
 conn.close()
