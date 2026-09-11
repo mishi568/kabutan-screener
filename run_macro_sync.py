@@ -34,7 +34,7 @@ def _already_run_today(conn, source: str, force: bool) -> bool:
     if force:
         return False
     today = datetime.date.today().isoformat()
-    return db.get_last_macro_sync(conn, source) == today
+    return db.get_last_sync(conn, source) == today
 
 
 def sync_jpx(conn, force: bool = False) -> None:
@@ -57,7 +57,7 @@ def sync_jpx(conn, force: bool = False) -> None:
             else:
                 print(f"  [NG] 取込失敗 ({filepath}): {result['error']}")
 
-    db.set_last_macro_sync(conn, "jpx", datetime.date.today().isoformat())
+    db.set_last_sync(conn, "jpx", datetime.date.today().isoformat())
 
 
 def sync_edinet(conn, force: bool = False) -> None:
@@ -71,7 +71,7 @@ def sync_edinet(conn, force: bool = False) -> None:
         print(f"  {msg}")
 
     if result["success"]:
-        db.set_last_macro_sync(conn, "edinet", datetime.date.today().isoformat())
+        db.set_last_sync(conn, "edinet", datetime.date.today().isoformat())
 
 
 def sync_nikkei225jp(conn, force: bool = False) -> None:
@@ -87,7 +87,7 @@ def sync_nikkei225jp(conn, force: bool = False) -> None:
         else:
             print(f"  [NG] [{key}] 取得失敗: {sub.get('error')}")
 
-    db.set_last_macro_sync(conn, "nikkei225jp", datetime.date.today().isoformat())
+    db.set_last_sync(conn, "nikkei225jp", datetime.date.today().isoformat())
 
 
 def run(force: bool = False) -> None:

@@ -318,11 +318,11 @@ CREATE TABLE IF NOT EXISTS nikkei225jp_fear_index (
     timestamp TEXT
 );
 
--- マクロ・需給データ同期(jpx/edinet/nikkei225jp)の実行記録。
+-- 各データ収集スクリプト(kabutan_daily/jpx/edinet/nikkei225jp)の実行記録。
 -- 実データの日付(公表ラグがあり「本日」と一致しないことが多い)ではなく、
 -- 「このスクリプトを今日すでに実行したか」を管理し、ボタン連打での無駄な
--- 再取得(特にnikkei225jp.comはPlaywrightでの取得に時間がかかる)を防ぐ。
-CREATE TABLE IF NOT EXISTS macro_sync_log (
+-- 再取得(サイトへの負荷、nikkei225jp.comはPlaywrightで時間もかかる)を防ぐ。
+CREATE TABLE IF NOT EXISTS sync_log (
     source TEXT PRIMARY KEY,
     last_run_date DATE NOT NULL
 );
@@ -383,16 +383,16 @@ def get_latest_edinet_date(conn) -> str | None:
     return row[0] if row else None
 
 
-def get_last_macro_sync(conn, source: str) -> str | None:
-    """指定ソース(jpx/edinet/nikkei225jp)を最後に実行した日付を返す(未実行ならNone)。"""
-    row = conn.execute("SELECT last_run_date FROM macro_sync_log WHERE source = ?", (source,)).fetchone()
+def get_last_sync(conn, source: str) -> str | None:
+    """指定ソース(kabutan_daily/jpx/edinet/nikkei225jp)を最後に実行した日付を返す(未実行ならNone)。"""
+    row = conn.execute("SELECT last_run_date FROM sync_log WHERE source = ?", (source,)).fetchone()
     return row[0] if row else None
 
 
-def set_last_macro_sync(conn, source: str, run_date: str):
+def set_last_sync(conn, source: str, run_date: str):
     conn.execute(
         """
-        INSERT INTO macro_sync_log (source, last_run_date)
+        INSERT INTO sync_log (source, last_run_date)
         VALUES (?, ?)
         ON CONFLICT(source) DO UPDATE SET last_run_date = excluded.last_run_date
         """,
