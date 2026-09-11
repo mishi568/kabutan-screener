@@ -17,23 +17,9 @@ import datetime
 from fetch import fetch_html
 from parse import parse_stock_detail
 from db import get_conn, insert_stock_detail
+from util import get_top_codes_from_picks
 
 BASE_URL = "https://kabutan.jp/stock/?code={code}"
-
-
-def get_top_codes_from_picks(conn, funnel_key: str, top: int) -> list[str]:
-    row = conn.execute(
-        "SELECT MAX(pick_date) FROM screening_picks WHERE funnel_key = ?", (funnel_key,)
-    ).fetchone()
-    latest_date = row[0]
-    if not latest_date:
-        return []
-    rows = conn.execute(
-        "SELECT code FROM screening_picks WHERE funnel_key = ? AND pick_date = ? "
-        "ORDER BY score DESC LIMIT ?",
-        (funnel_key, latest_date, top),
-    ).fetchall()
-    return [r[0] for r in rows]
 
 
 def main():

@@ -12,8 +12,17 @@
 """
 
 import json
+import re
 from io import StringIO
 import pandas as pd
+
+
+def extract_stock_name(html: str) -> str | None:
+    """個別銘柄ページ（/stock/?code=XXXX）のtitleタグから銘柄名を抜き出す。
+    例: '<title>ＭＩＸＩ【2121】株の基本情報｜株探（かぶたん）</title>' -> 'ＭＩＸＩ'
+    取れなければNoneを返す。"""
+    m = re.search(r"<title>(.*?)【", html)
+    return m.group(1).strip() if m else None
 
 
 def parse_stock_detail(html: str) -> dict:

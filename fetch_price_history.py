@@ -34,6 +34,7 @@ import time
 from fetch import fetch_html
 from parse import find_price_history_table, price_history_to_records
 from db import get_conn, get_all_codes, get_known_dates, insert_price_history, get_progress, set_progress
+from util import get_top_codes_from_picks
 
 BASE_URL = "https://kabutan.jp/stock/kabuka?code={code}&ashi=day&page={page}"
 
@@ -86,6 +87,8 @@ def main():
     parser.add_argument("--pages", type=int, default=3, help="銘柄ごとの最大取得ページ数（1ページ≒1ヶ月弱）")
     parser.add_argument("--limit", type=int, default=None, help="対象銘柄数の上限（テスト用）")
     parser.add_argument("--codes", type=str, default=None, help="カンマ区切りで銘柄コードを直接指定")
+    parser.add_argument("--top", type=int, default=None,
+                         help="score_ranking.py(funnel_key=signal_score)の最新結果の上位N銘柄を対象にする")
     parser.add_argument("--sleep-min", type=float, default=3.0)
     parser.add_argument("--sleep-max", type=float, default=6.0)
     args = parser.parse_args()
@@ -94,6 +97,12 @@ def main():
 
     if args.codes:
         codes = [c.strip() for c in args.codes.split(",") if c.strip()]
+    elif args.top:
+        codes = get_top_codes_from_picks(conn, "signal_score", args.top)
+        if not codes:
+            print("screening_picksにsignal_scoreの記録がありません。先にscore_ranking.pyを実行してください。")
+            conn.close()
+            return
     else:
         codes = get_all_codes(conn)
         if args.limit:

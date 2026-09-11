@@ -23,3 +23,19 @@ def pct_to_float(s):
         return float(s)
     except ValueError:
         return None
+
+
+def get_top_codes_from_picks(conn, funnel_key: str, top: int) -> list[str]:
+    """screening_picksの最新pick_dateについて、指定funnel_keyのスコア上位N銘柄コードを返す。"""
+    row = conn.execute(
+        "SELECT MAX(pick_date) FROM screening_picks WHERE funnel_key = ?", (funnel_key,)
+    ).fetchone()
+    latest_date = row[0]
+    if not latest_date:
+        return []
+    rows = conn.execute(
+        "SELECT code FROM screening_picks WHERE funnel_key = ? AND pick_date = ? "
+        "ORDER BY score DESC LIMIT ?",
+        (funnel_key, latest_date, top),
+    ).fetchall()
+    return [r[0] for r in rows]

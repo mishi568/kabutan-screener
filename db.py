@@ -78,6 +78,34 @@ CREATE TABLE IF NOT EXISTS stock_details (
     data_json     TEXT,
     PRIMARY KEY (code, snapshot_date)
 );
+
+-- 保有銘柄（ポートフォリオ）の登録簿。screening_picks等の候補選定とは別枠で管理する。
+-- 削除はせずremoved_dateを立てるだけ（売却後も履歴として残す）。
+CREATE TABLE IF NOT EXISTS holdings (
+    code         TEXT PRIMARY KEY,
+    name         TEXT,
+    memo         TEXT,
+    added_date   DATE NOT NULL,
+    removed_date DATE
+);
+
+-- 保有銘柄専用の株価ヒストリー。price_history（スクリーニング候補の深いバックフィル用、
+-- 進捗管理ありで最新ページを取り直さない仕組み）とは切り離し、保有銘柄は
+-- fetch_holdings_price.py が毎回「直近ページを取り直す」方式で常に最新化する。
+CREATE TABLE IF NOT EXISTS holdings_price_history (
+    code       TEXT NOT NULL,
+    date       DATE NOT NULL,
+    open       REAL,
+    high       REAL,
+    low        REAL,
+    close      REAL,
+    change     REAL,
+    change_pct REAL,
+    volume     INTEGER,
+    PRIMARY KEY (code, date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_holdings_price_date ON holdings_price_history(date);
 """
 
 
@@ -207,4 +235,54 @@ def set_progress(conn, code: str, max_page_fetched: int, reached_end: bool):
             reached_end      = MAX(price_history_progress.reached_end, excluded.reached_end)
         """,
         (code, max_page_fetched, int(reached_end)),
+    )
+
+
+def add_holding(conn, code: str, added_date: str, name: str | None = None, memo: str | None = None):
+    """保有銘柄を登録する（既に登録済み・解除済みの場合は再度保有中に戻す）。"""
+    conn.execute(
+        """
+        INSERT INTO holdings (code, name, memo, added_date, removed_date)
+        VALUES (?, ?, ?, ?, NULL)
+        ON CONFLICT(code) DO UPDATE SET
+            name         = COALESCE(excluded.name, holdings.name),
+            memo         = COALESCE(excluded.memo, holdings.memo),
+            added_date   = excluded.added_date,
+            removed_date = NULL
+        """,
+        (code, name, memo, added_date),
+    )
+    conn.commit()
+
+
+def remove_holding(conn, code: str, removed_date: str):
+    """保有銘柄を解除する（行は削除せず、removed_dateを立てて履歴として残す）。"""
+    conn.execute("UPDATE holdings SET removed_date = ? WHERE code = ?", (removed_date, code))
+    conn.commit()
+
+
+def get_active_holdings(conn) -> list[str]:
+    """現在保有中（removed_dateが未設定）の銘柄コード一覧を返す。"""
+    rows = conn.execute(
+        "SELECT code FROM holdings WHERE removed_date IS NULL ORDER BY code"
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def get_all_holdings(conn) -> list[tuple]:
+    """保有中・解除済み含む全登録銘柄を返す（(code, name, memo, added_date, removed_date)のタプル）。"""
+    return conn.execute(
+        "SELECT code, name, memo, added_date, removed_date FROM holdings ORDER BY removed_date IS NOT NULL, added_date DESC"
+    ).fetchall()
+
+
+def insert_holdings_price(conn, records: list[dict]):
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO holdings_price_history
+            (code, date, open, high, low, close, change, change_pct, volume)
+        VALUES
+            (:code, :date, :open, :high, :low, :close, :change, :change_pct, :volume)
+        """,
+        records,
     )
