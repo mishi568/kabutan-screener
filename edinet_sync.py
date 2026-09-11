@@ -50,14 +50,10 @@ def _extract_holding_info(doc: dict) -> dict | None:
     if not filer_name:
         return None
 
-    sec_code = doc.get("secCode", "")
-    if sec_code:
-        sec_code = str(sec_code).strip()
-        if len(sec_code) >= 4:
-            sec_code = sec_code[:4]
-        if not re.match(r"^\d{4}$", sec_code):
-            sec_code = None
-
+    # secCodeは「提出者(=保有者・報告書を出した側)」自身の証券コードで、
+    # 提出者が上場企業の場合のみ入る(例: Ａｂａｌａｎｃｅ株式会社が他社株を
+    # 5%以上保有して提出者になったケース)。この報告書が「どの銘柄について」の
+    # ものかとは無関係なので、対象銘柄コードとしては使わない。
     doc_title = doc.get("docDescription", "")
     report_type = "変更報告書" if "変更" in doc_title else "大量保有報告書"
 
@@ -67,7 +63,14 @@ def _extract_holding_info(doc: dict) -> dict | None:
         if ratio_matches:
             holding_ratio = float(ratio_matches[0])
 
-    issuer_name = doc.get("edinetCode", "") or doc.get("subjectEdinetCode", "")
+    # subjectEdinetCode: 大量保有報告書(docTypeCode=350)のみ設定される「対象
+    # (=保有される側の発行会社)」のEDINETコード。これが「どの銘柄についての
+    # 報告か」を表す。edinetCodeは提出者(保有者)自身のコードで対象銘柄とは
+    # 無関係なため、subjectEdinetCodeが無い異常系のフォールバックにのみ使う。
+    # ※EDINETの書類一覧APIは対象銘柄の証券コード/会社名そのものは返さないため、
+    # ここではEDINETコード(E+5桁)のまま保存する。4桁の証券コードや会社名に
+    # 変換するには別途EDINETコードリストとの突合が必要(未対応)。
+    issuer_name = doc.get("subjectEdinetCode", "") or doc.get("edinetCode", "")
 
     filing_date = doc.get("submitDateTime", "")
     if filing_date:
@@ -77,7 +80,9 @@ def _extract_holding_info(doc: dict) -> dict | None:
         "doc_id": doc_id,
         "date": filing_date,
         "submission_date": filing_date,
-        "code": sec_code,
+        # 対象銘柄の4桁証券コードはEDINETの書類一覧APIからは取得できないため
+        # 現状Noneのまま(issuer_nameのEDINETコードで対象銘柄を判別する)。
+        "code": None,
         "issuer_name": issuer_name,
         "holder_name": filer_name,
         "holding_ratio": holding_ratio,

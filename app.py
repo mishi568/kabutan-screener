@@ -541,9 +541,13 @@ with tab7:
         st.dataframe(df_short_conc, use_container_width=True, hide_index=True)
 
     st.subheader("📄 EDINET大量保有報告書（直近30日）")
+    st.caption(
+        "「対象銘柄EDINETコード」はどの発行会社についての報告かを示すEDINETコード(E+5桁)です。"
+        "EDINET APIは対象銘柄の証券コード/会社名を直接は返さないため、現状は証券コードへの変換は未対応です。"
+    )
     df_edinet = pd.read_sql_query(
         """
-        SELECT date, code, issuer_name, holder_name, holding_ratio, report_type
+        SELECT date, issuer_name, holder_name, holding_ratio, report_type
         FROM edinet_large_holdings
         WHERE date >= date('now', '-30 days')
         ORDER BY date DESC
@@ -554,6 +558,13 @@ with tab7:
     if df_edinet.empty:
         st.info("データがありません（EDINET_API_KEY未設定の場合は取得されません）。")
     else:
+        df_edinet = df_edinet.rename(columns={
+            "date": "提出日",
+            "issuer_name": "対象銘柄EDINETコード",
+            "holder_name": "提出者(保有者)",
+            "holding_ratio": "保有割合(%)",
+            "report_type": "種別",
+        })
         st.dataframe(df_edinet, use_container_width=True, hide_index=True)
 
 conn.close()
