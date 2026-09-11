@@ -15,6 +15,88 @@ import json
 import datetime
 from db import get_conn
 
+# 地合い判断に使う日経平均関連マクロ指標のテーブル一覧。
+# いずれも(date, ...)形式で、直近1件をMAX(date)で取得する。
+_MACRO_TABLES = {
+    "nt": "nikkei225jp_nt_ratio",
+    "fear": "nikkei225jp_fear_index",
+    "arb": "nikkei225jp_arbitrage",
+    "karauri_n225jp": "nikkei225jp_short_selling",
+    "karauri_jpx": "jpx_short_selling",
+    "sinyou": "nikkei_margin_records",
+    "futures": "nikkei225jp_futures_broker",
+    "investor_jpx": "jpx_investor_trends",
+    "per": "nikkei_per_records",
+}
+
+
+def _latest_row(conn, table: str) -> dict | None:
+    row = conn.execute(f"SELECT * FROM {table} ORDER BY date DESC LIMIT 1").fetchone()
+    if row is None:
+        return None
+    cols = [d[0] for d in conn.execute(f"SELECT * FROM {table} LIMIT 0").description]
+    return dict(zip(cols, row))
+
+
+def format_macro_overview(conn) -> str:
+    """日経平均関連のマクロ・需給指標を要約し、AIへの相場観判断の指示を付けて返す。
+
+    データが1つも無ければ空文字を返す(run_macro_sync.py未実行の場合、セクション自体を省略する)。
+    """
+    m = {key: _latest_row(conn, table) for key, table in _MACRO_TABLES.items()}
+    if not any(m.values()):
+        return ""
+
+    lines = ["## 📊 【前提】全体相場環境(日経平均・需給マクロ指標)"]
+
+    if m["per"]:
+        r = m["per"]
+        lines.append(f"- 日経平均: {r['price']:,.2f}円 / PER {r['per']}倍 / PBR {r['pbr']}倍 (基準日: {r['date']})")
+    if m["nt"] and m["nt"]["nt_ratio"] is not None:
+        r = m["nt"]
+        lines.append(f"- NT倍率(日経平均/TOPIX): {r['nt_ratio']:.2f} (基準日: {r['date']}) ※上昇=値がさ株優位、下降=内需/中小型株優位の目安")
+    if m["fear"] and m["fear"]["japan_vi"] is not None:
+        r = m["fear"]
+        lines.append(f"- 日本VI(恐怖指数): {r['japan_vi']:.2f} (基準日: {r['date']}) ※20未満は平静、30超は警戒、40超はパニック局面の目安")
+    if m["sinyou"]:
+        r = m["sinyou"]
+        pl = f", 信用評価損益率 {r['profit_loss_ratio']:+.2f}%" if r["profit_loss_ratio"] is not None else ""
+        lines.append(f"- 信用倍率(東証全体): {r['margin_ratio']}倍{pl} (基準日: {r['date']})")
+    if m["karauri_jpx"] and m["karauri_jpx"]["short_selling_ratio"] is not None:
+        r = m["karauri_jpx"]
+        lines.append(f"- 空売り比率(JPX公式): {r['short_selling_ratio']:.2f}% (基準日: {r['date']})")
+    elif m["karauri_n225jp"] and m["karauri_n225jp"]["short_ratio_total"] is not None:
+        r = m["karauri_n225jp"]
+        lines.append(f"- 空売り比率(nikkei225jp.com): {r['short_ratio_total']:.1f}% (基準日: {r['date']})")
+    if m["arb"] and m["arb"]["net_shares"] is not None:
+        r = m["arb"]
+        lines.append(
+            f"- 裁定買い残-売り残差引: {r['net_shares']:,.0f}千株 (基準日: {r['date']}) "
+            f"※将来の機械的な現物売り圧力(裁定解消売り)の潜在量。高水準なほど上値が重い目安"
+        )
+    if m["futures"] and m["futures"]["foreign_net"] is not None:
+        r = m["futures"]
+        lines.append(f"- 日経225先物 外資系証券ネット建玉: {r['foreign_net']:+,.0f}枚 (基準週: {r['date']}) ※海外機関投資家の先物ポジション方向")
+    if m["investor_jpx"]:
+        r = m["investor_jpx"]
+        parts = []
+        if r["foreign_net"] is not None:
+            parts.append(f"外国人 {r['foreign_net']:+,.0f}億円")
+        if r["individual_net"] is not None:
+            parts.append(f"個人 {r['individual_net']:+,.0f}億円")
+        if r["trust_bank_net"] is not None:
+            parts.append(f"信託銀行 {r['trust_bank_net']:+,.0f}億円")
+        if parts:
+            lines.append(f"- 投資部門別売買動向(JPX公式、基準日: {r['date']}): " + " / ".join(parts))
+
+    lines.append("")
+    lines.append(
+        "**上記のマクロ・需給指標を踏まえて、まず現在の日本株市場全体の相場観"
+        "(強気/中立/弱気とその理由)を判断してから、以下の個別銘柄の評価に進んでください。**"
+    )
+    return "\n".join(lines)
+
+
 SIGNAL_LABELS = {
     "tansaku_macd_buy": "MACD買いシグナル",
     "tansaku_parabolic_bull": "パラボリック陽転",
@@ -134,8 +216,14 @@ def main():
         f"これらの情報をもとに、改めて有望度のランキングと簡単な理由付けをしてください。\n"
     )
 
+    macro_overview = format_macro_overview(conn)
+
     blocks = [format_stock_block(conn, code, date) for code in codes]
-    content = header + "\n\n" + "\n\n".join(blocks)
+    parts = [header]
+    if macro_overview:
+        parts.append(macro_overview)
+    parts.extend(blocks)
+    content = "\n\n".join(parts)
 
     out_path = args.out or f"ai_brief_{date}.md"
     with open(out_path, "w", encoding="utf-8") as f:

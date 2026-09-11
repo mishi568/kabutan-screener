@@ -111,6 +111,7 @@ st.sidebar.divider()
 if st.sidebar.button("🚀 全自動実行（地合い＋①〜⑥をまとめて実行）", use_container_width=True, type="primary"):
     steps = [
         (["fetch_market_index.py", "--pages", "2"], "🌐 地合い記録 (fetch_market_index.py)", len(MARKET_INDICES)),
+        (["run_macro_sync.py"], "🌐 マクロ・需給データ取得 (run_macro_sync.py)", 14),
         (["run_daily.py"], "① 日次収集 (run_daily.py)", len(RANKINGS)),
         (["flag_watch_list.py"], "② ウォッチリスト記録 (flag_watch_list.py)", None),
         (
@@ -126,7 +127,6 @@ if st.sidebar.button("🚀 全自動実行（地合い＋①〜⑥をまとめ�
         ),
         (["compile_ai_brief.py", "--top", str(top_n)], "⑥ AIダイジェスト生成 (compile_ai_brief.py)", None),
         (["fetch_holdings_price.py"], "💼 保有銘柄の株価更新 (fetch_holdings_price.py)", None),
-        (["run_macro_sync.py"], "🌐 マクロ・需給データ取得 (run_macro_sync.py)", 14),
     ]
 
     overall = st.sidebar.empty()
