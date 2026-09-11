@@ -89,7 +89,9 @@ def run_script(args: list[str], label: str, total_steps: int | None = None) -> b
         if stripped:
             status_msg.info(f"▶ {label} 実行中…\n\n**{stripped}**")
 
-        log_holder.code("".join(output_lines[-30:]))
+        # heightを固定してスクロール可能にする（付けないとログが伸びるたびに
+        # ページ全体が伸びて、下のAIダイジェストやタブがどんどん下に追いやられる）
+        log_holder.code("".join(output_lines[-200:]), height=200)
 
     process.wait()
     if progress_bar is not None:
